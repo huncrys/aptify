@@ -251,7 +251,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 							return fmt.Errorf("failed to create pool subdirectory: %w", err)
 						}
 
-						if err := cp.Copy(pkgPath, filepath.Join(repoDir, pkg.Filename)); err != nil {
+						if err := cp.Copy(pkgPath, filepath.Join(repoDir, pkg.Filename), cp.Options{PreserveTimes: true}); err != nil {
 							return fmt.Errorf("failed to copy package: %w", err)
 						}
 

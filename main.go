@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	stdtime "time"
@@ -215,6 +216,62 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 	archsForReleaseComponent := make(map[string]map[string]bool)
 	pkgPoolPaths := make(map[string]string)
 
+	// Load existing repository directory
+	if dir, err := os.Stat(repoDir); err == nil && dir.IsDir() {
+		slog.Info("Loading existing repository", slog.String("dir", repoDir))
+
+		for _, releaseConf := range conf.Releases {
+			for _, componentConf := range releaseConf.Components {
+				releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
+
+				componentDir := filepath.Join(repoDir, "dists", releaseConf.Name, componentConf.Name)
+				if _, ok := archsForReleaseComponent[releaseComponent]; !ok {
+					archsForReleaseComponent[releaseComponent] = make(map[string]bool)
+				}
+				archDirs, err := filepath.Glob(filepath.Join(componentDir, "binary-*"))
+
+				if err != nil {
+					continue
+				}
+
+				for _, archDir := range archDirs {
+					if dir, err := os.Stat(archDir); err == nil && dir.IsDir() {
+						slog.Debug("Found existing architecture directory",
+							slog.String("dir", archDir), slog.String("release_component", releaseComponent))
+						// Read the Packages file to get existing packages.
+						packagesFile := filepath.Join(archDir, "Packages")
+						if fi, err := os.Stat(packagesFile); err == nil && !fi.IsDir() {
+							slog.Debug("Found existing Packages file",
+								slog.String("file", packagesFile), slog.String("release_component", releaseComponent))
+
+							reader, err := os.Open(packagesFile)
+							if err != nil {
+								return fmt.Errorf("failed to open Packages file: %w", err)
+							}
+							defer reader.Close()
+							decoder, err := deb822.NewDecoder(reader, nil)
+							if err != nil {
+								return fmt.Errorf("failed to create decoder for Packages file: %w", err)
+							}
+
+							var packages []types.Package
+							if err := decoder.Decode(&packages); err != nil {
+								return fmt.Errorf("failed to decode Packages file: %w", err)
+							}
+
+							packagesForReleaseComponent[releaseComponent] = append(packagesForReleaseComponent[releaseComponent], packages...)
+
+							// Get the architectures from the Packages file.
+							for _, pkg := range packages {
+								archsForReleaseComponent[releaseComponent][pkg.Architecture.String()] = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Copy packages to the pool directory.
 	for _, releaseConf := range conf.Releases {
 		for _, componentConf := range releaseConf.Components {
@@ -236,6 +293,40 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 					if err != nil {
 						return fmt.Errorf("failed to hash package: %w", err)
 					}
+
+					skip := false
+					if _, ok := packagesForReleaseComponent[releaseComponent]; ok {
+						for _, existingPkg := range packagesForReleaseComponent[releaseComponent] {
+							if pkg.Compare(existingPkg) != 0 {
+								continue
+							}
+							if existingPkg.SHA256 != pkg.SHA256 {
+								slog.Warn("Package SHA256 mismatch, overwriting",
+									slog.String("name", pkg.Name),
+									slog.String("version", pkg.Version.String()),
+									slog.String("architecture", pkg.Architecture.String()),
+									slog.String("existing_sha256", existingPkg.SHA256),
+									slog.String("new_sha256", pkg.SHA256))
+								continue
+							}
+							skip = true
+							break
+						}
+					}
+
+					if skip {
+						slog.Info("Skipping existing package",
+							slog.String("name", pkg.Name),
+							slog.String("version", pkg.Version.String()),
+							slog.String("architecture", pkg.Architecture.String()))
+
+						continue
+					}
+
+					// Remove duplicates
+					packagesForReleaseComponent[releaseComponent] = slices.DeleteFunc(packagesForReleaseComponent[releaseComponent], func(existingPkg types.Package) bool {
+						return pkg.Compare(existingPkg) == 0
+					})
 
 					if _, ok := archsForReleaseComponent[releaseComponent]; !ok {
 						archsForReleaseComponent[releaseComponent] = make(map[string]bool)

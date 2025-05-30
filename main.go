@@ -357,7 +357,7 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 		return fmt.Errorf("failed to marshal packages: %w", err)
 	}
 
-	for _, name := range []string{"Packages", "Packages.xz"} {
+	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
 		f, err := os.Create(filepath.Join(archDir, name))
 		if err != nil {
 			return fmt.Errorf("failed to create Packages file: %w", err)

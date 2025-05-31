@@ -20,6 +20,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -180,6 +181,24 @@ func main() {
 						c.String("config"),
 						privateKeyPath,
 					)
+				},
+			},
+			{
+				Name:  "inspect",
+				Usage: "Dump all packages in the repository as JSON",
+				Flags: append([]cli.Flag{
+					&cli.StringFlag{
+						Name:    "repository-dir",
+						Aliases: []string{"d"},
+						Usage:   "Directory containing the repository",
+						Value:   "repository",
+					},
+				}, persistentFlags...),
+				Before: util.BeforeAll(initLogger),
+				Action: func(c *cli.Context) error {
+					repoDir := c.String("repository-dir")
+
+					return inspectRepository(repoDir)
 				},
 			},
 		},
@@ -599,4 +618,51 @@ func loadPrivateKey(path string) (*openpgp.Entity, error) {
 	}
 
 	return keyRing[0], nil
+}
+
+func inspectRepository(repoDir string) error {
+	if dir, err := os.Stat(repoDir); err != nil || !dir.IsDir() {
+		return fmt.Errorf("repository directory does not exist: %s", repoDir)
+	}
+
+	files, err := filepath.Glob(filepath.Join(repoDir, "dists", "*", "*", "binary-*", "Packages"))
+	if err != nil {
+		return fmt.Errorf("failed to find Packages files: %w", err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no Packages files found in repository directory: %s", repoDir)
+	}
+
+	var packages []types.Package
+
+	for _, file := range files {
+		reader, err := os.Open(file)
+		if err != nil {
+			return fmt.Errorf("failed to open Packages file: %w", err)
+		}
+		defer reader.Close()
+		decoder, err := deb822.NewDecoder(reader, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create decoder for Packages file: %w", err)
+		}
+
+		var candidates []types.Package
+		if err := decoder.Decode(&candidates); err != nil {
+			return fmt.Errorf("failed to decode Packages file: %w", err)
+		}
+
+		for _, candidate := range candidates {
+			found := slices.ContainsFunc(packages, func(pkg types.Package) bool {
+				return candidate.Compare(pkg) == 0
+			})
+
+			if !found {
+				packages = append(packages, candidate)
+			}
+		}
+	}
+
+	json.NewEncoder(os.Stdout).Encode(packages)
+
+	return nil
 }

@@ -609,7 +609,7 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 		slog.String("dir", componentDir), slog.Int("count", len(paths)))
 
 	for _, path := range paths {
-		if _, err := fmt.Fprintf(w, "%s %s\n", path, strings.Join(packageFiles[path], ",")); err != nil {
+		if _, err := fmt.Fprintf(w, "%s %s\n", path, strings.Join(contents[path], ",")); err != nil {
 			return fmt.Errorf("failed to write contents: %w", err)
 		}
 	}

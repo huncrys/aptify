@@ -19,9 +19,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -232,6 +234,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 	}
 
 	packagesForReleaseComponent := make(map[string][]types.Package)
+	newPackagesForReleaseComponent := make(map[string][]types.Package)
 	archsForReleaseComponent := make(map[string]map[string]bool)
 	pkgPoolPaths := make(map[string]string)
 
@@ -378,6 +381,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 					pkg.Size = int(fi.Size())
 
 					packagesForReleaseComponent[releaseComponent] = append(packagesForReleaseComponent[releaseComponent], *pkg)
+					newPackagesForReleaseComponent[releaseComponent] = append(newPackagesForReleaseComponent[releaseComponent], *pkg)
 				}
 			}
 		}
@@ -386,6 +390,8 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 	// Create release files.
 	for _, releaseConf := range conf.Releases {
 		var architectures []arch.Arch
+
+		modified := false
 
 		for _, componentConf := range releaseConf.Components {
 			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
@@ -399,7 +405,6 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				}
 
 				packages := packagesForReleaseComponent[releaseComponent]
-
 				// Filter out packages that don't match the architecture.
 				filteredPackages := make([]types.Package, 0, len(packages))
 				for _, pkg := range packages {
@@ -409,15 +414,38 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				}
 				packages = filteredPackages
 
+				newPackages := newPackagesForReleaseComponent[releaseComponent]
+				// Filter out packages that don't match the architecture.
+				filteredNewPackages := make([]types.Package, 0, len(newPackages))
+				for _, pkg := range newPackages {
+					if pkg.Architecture.String() == architecture {
+						filteredNewPackages = append(filteredNewPackages, pkg)
+					}
+				}
+				newPackages = filteredNewPackages
+
+				if len(newPackages) == 0 {
+					slog.Info("Skipping index generation, no new packages found",
+						slog.String("dir", archDir),
+					)
+
+					continue
+				}
+
+				modified = true
+
 				sort.Slice(packages, func(i, j int) bool {
 					return packages[i].Compare(packages[j]) < 0
+				})
+				sort.Slice(newPackages, func(i, j int) bool {
+					return newPackages[i].Compare(newPackages[j]) < 0
 				})
 
 				if err := writePackagesIndice(archDir, packages); err != nil {
 					return fmt.Errorf("failed to write package lists: %w", err)
 				}
 
-				if err := writeContentsIndice(repoDir, componentDir, packages, architecture); err != nil {
+				if err := writeContentsIndice(repoDir, componentDir, newPackages, architecture); err != nil {
 					return fmt.Errorf("failed to write contents file: %w", err)
 				}
 
@@ -426,6 +454,11 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 		}
 
 		releaseDir := filepath.Join(repoDir, "dists", releaseConf.Name)
+		if !modified {
+			slog.Info("Skipping release generation, no changes", slog.String("dir", releaseDir))
+			continue
+		}
+
 		if err := os.MkdirAll(releaseDir, 0o755); err != nil {
 			return fmt.Errorf("failed to create release directory: %w", err)
 		}
@@ -489,11 +522,37 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 }
 
 func writeContentsIndice(repoDir, componentDir string, packages []types.Package, arch string) error {
-	f, err := os.Create(filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch)))
+	f, err := os.OpenFile(filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch)), os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
-		return fmt.Errorf("failed to create Contents file: %w", err)
+		return fmt.Errorf("failed to open Contents file: %w", err)
 	}
 	defer f.Close()
+
+	packageFiles := make(map[string][]string)
+
+	if r, err := uncompr.NewReader(f); err == nil {
+		defer r.Close()
+
+		// Read r into contents with fmt.Fscanf
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid Contents line: %s", line)
+			}
+			path := parts[0]
+			packages := strings.Split(parts[1], ",")
+			for _, pkg := range packages {
+				packageFiles[pkg] = append(packageFiles[pkg], path)
+			}
+		}
+	} else if err != io.EOF {
+		return fmt.Errorf("failed to create decompression reader: %w", err)
+	}
 
 	w, err := uncompr.NewWriter(f, f.Name())
 	if err != nil {
@@ -503,11 +562,25 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 
 	slog.Info("Collecting package contents", slog.String("dir", componentDir))
 
-	contents := make(map[string][]string)
 	for _, pkg := range packages {
 		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
 		if err != nil {
 			return fmt.Errorf("failed to get package contents: %w", err)
+		}
+
+		for k := range packageFiles {
+			parts := strings.SplitN(k, "/", 2)
+			section, name := "", ""
+			if len(parts) > 1 {
+				section = parts[0]
+				name = parts[1]
+			} else {
+				name = parts[0]
+			}
+
+			if section != pkg.Section && name == pkg.Name {
+				delete(packageFiles, k)
+			}
 		}
 
 		qualifiedPackageName := pkg.Name
@@ -515,8 +588,13 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 			qualifiedPackageName = fmt.Sprintf("%s/%s", pkg.Section, pkg.Name)
 		}
 
-		for _, path := range pkgContents {
-			contents[path] = append(contents[path], qualifiedPackageName)
+		packageFiles[qualifiedPackageName] = pkgContents
+	}
+
+	contents := make(map[string][]string)
+	for pkg, paths := range packageFiles {
+		for _, path := range paths {
+			contents[path] = append(contents[path], pkg)
 		}
 	}
 
@@ -531,7 +609,7 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 		slog.String("dir", componentDir), slog.Int("count", len(paths)))
 
 	for _, path := range paths {
-		if _, err := fmt.Fprintf(w, "%s %s\n", path, strings.Join(contents[path], ",")); err != nil {
+		if _, err := fmt.Fprintf(w, "%s %s\n", path, strings.Join(packageFiles[path], ",")); err != nil {
 			return fmt.Errorf("failed to write contents: %w", err)
 		}
 	}

@@ -27,14 +27,32 @@ import (
 )
 
 // Directory returns the sha256sum of all files in a directory.
-func Directory(dir string) ([]filehash.FileHash, error) {
+func Directory(dir string, globs []string) ([]filehash.FileHash, error) {
 	var hashes []filehash.FileHash
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path of directory: %w", err)
+	}
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		if d.IsDir() {
+			return nil
+		}
+
+		matched := len(globs) == 0
+		if !matched {
+			for _, glob := range globs {
+				if ok, _ := filepath.Match(filepath.Join(dir, glob), path); ok {
+					matched = true
+					break
+				}
+			}
+		}
+
+		if !matched {
 			return nil
 		}
 

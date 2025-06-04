@@ -639,7 +639,7 @@ func writeReleaseFile(releaseDir string, releaseConf v1alpha1.ReleaseConfig, arc
 	}
 
 	var err error
-	r.SHA256, err = sha256sum.Directory(releaseDir)
+	r.SHA256, err = sha256sum.Directory(releaseDir, []string{"*/binary-*/Packages*", "*/Contents-*"})
 	if err != nil {
 		return fmt.Errorf("failed to hash release: %w", err)
 	}

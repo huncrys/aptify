@@ -547,7 +547,9 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 			path := parts[0]
 			packages := strings.Split(parts[1], ",")
 			for _, pkg := range packages {
-				packageFiles[pkg] = append(packageFiles[pkg], path)
+				if !slices.Contains(packageFiles[pkg], path) {
+					packageFiles[pkg] = append(packageFiles[pkg], path)
+				}
 			}
 		}
 	} else if err != io.EOF {
@@ -570,15 +572,10 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 
 		for k := range packageFiles {
 			parts := strings.SplitN(k, "/", 2)
-			section, name := "", ""
-			if len(parts) > 1 {
-				section = parts[0]
-				name = parts[1]
-			} else {
-				name = parts[0]
-			}
+			slices.Reverse(parts)
+			name := parts[0]
 
-			if section != pkg.Section && name == pkg.Name {
+			if name == pkg.Name {
 				delete(packageFiles, k)
 			}
 		}
@@ -594,7 +591,9 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 	contents := make(map[string][]string)
 	for pkg, paths := range packageFiles {
 		for _, path := range paths {
-			contents[path] = append(contents[path], pkg)
+			if !slices.Contains(contents[path], pkg) {
+				contents[path] = append(contents[path], pkg)
+			}
 		}
 	}
 
@@ -608,6 +607,8 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 	slog.Info("Writing Contents indice",
 		slog.String("dir", componentDir), slog.Int("count", len(paths)))
 
+	f.Truncate(0)
+	f.Seek(0, io.SeekStart)
 	for _, path := range paths {
 		if _, err := fmt.Fprintf(w, "%s %s\n", path, strings.Join(contents[path], ",")); err != nil {
 			return fmt.Errorf("failed to write contents: %w", err)

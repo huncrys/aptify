@@ -469,6 +469,29 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 	}
 
 	// Save a copy of the signing key.
+	signingKeyFilePath := filepath.Join(repoDir, "signing_key.asc")
+	if _, err = os.Stat(signingKeyFilePath); err == nil {
+
+		if signingKeyFile, err := os.Open(signingKeyFilePath); err == nil {
+			defer signingKeyFile.Close()
+
+			if keyRing, err := openpgp.ReadArmoredKeyRing(signingKeyFile); err == nil {
+				for _, publicKey := range keyRing {
+					if slices.Equal(publicKey.PrimaryKey.Fingerprint, privateKey.PrimaryKey.Fingerprint) {
+						slog.Info("Skipping writing signing key, no changes",
+							slog.String("file", signingKeyFilePath))
+						return nil
+					}
+				}
+			}
+		}
+
+		slog.Info("Signing key file does not match private key, overwriting",
+			slog.String("file", signingKeyFilePath))
+	}
+
+	slog.Info("Writing signing key file", slog.String("file", signingKeyFilePath))
+
 	signingKeyFile, err := os.Create(filepath.Join(repoDir, "signing_key.asc"))
 	if err != nil {
 		return fmt.Errorf("failed to create signing key file: %w", err)
@@ -486,6 +509,10 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 
 	if err := publicKeyWriter.Close(); err != nil {
 		return fmt.Errorf("failed to close public key writer: %w", err)
+	}
+
+	if stat, err := os.Stat(privateKeyPath); err == nil {
+		os.Chtimes(signingKeyFilePath, stdtime.Time{}, stat.ModTime())
 	}
 
 	return nil

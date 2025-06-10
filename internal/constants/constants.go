@@ -19,6 +19,5 @@
 package constants
 
 var (
-	TelemetryURL = "https://telemetry.dpeckett.dev"
-	Version      = "dev"
+	Version = "dev"
 )

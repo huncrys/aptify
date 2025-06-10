@@ -1,0 +1,52 @@
+# This is an example .goreleaser.yml file with some sensible defaults.
+# Make sure to check the documentation at https://goreleaser.com
+
+# The lines below are called `modelines`. See `:help modeline`
+# Feel free to remove those if you don't want/need to use them.
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+project_name: aptify
+before:
+  hooks:
+    - go mod tidy
+
+gitlab_urls:
+  api: https://oaklab.hu/api/v4
+  download: https://oaklab.hu
+  use_package_registry: true
+
+release:
+  github:
+    owner: huncrys
+    name: aptify
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s
+      - -w
+      - -X github.com/dpeckett/aptify/internal/constants.Version={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: 
+      - tar.gz
+      - binary
+    files:
+      - LICENSE
+      - README.md
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

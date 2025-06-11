@@ -199,8 +199,9 @@ func main() {
 				Before: util.BeforeAll(initLogger),
 				Action: func(c *cli.Context) error {
 					repoDir := c.String("repository-dir")
+					privateKeyPath := filepath.Join(c.String("config-dir"), "aptify_private.asc")
 
-					return inspectRepository(repoDir)
+					return inspectRepository(repoDir, privateKeyPath)
 				},
 			},
 		},
@@ -217,7 +218,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
 	}
 
-	privateKey, err := loadPrivateKey(privateKeyPath)
+	privateKey, err := loadKey(privateKeyPath)
 	if err != nil {
 		return fmt.Errorf("failed to read private key: %w", err)
 	}
@@ -711,10 +712,10 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 		fmt.Sprintf("%s_%s_%s.deb", pkg.Name, pkg.Version, pkg.Architecture))
 }
 
-func loadPrivateKey(path string) (*openpgp.Entity, error) {
+func loadKey(path string) (*openpgp.Entity, error) {
 	keyFile, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open private key: %w", err)
+		return nil, fmt.Errorf("failed to open key: %w", err)
 	}
 	defer keyFile.Close()
 
@@ -726,49 +727,111 @@ func loadPrivateKey(path string) (*openpgp.Entity, error) {
 	return keyRing[0], nil
 }
 
-func inspectRepository(repoDir string) error {
+func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 	if dir, err := os.Stat(repoDir); err != nil || !dir.IsDir() {
-		return fmt.Errorf("repository directory does not exist: %s", repoDir)
+		return nil, fmt.Errorf("repository directory does not exist: %s", repoDir)
 	}
 
-	files, err := filepath.Glob(filepath.Join(repoDir, "dists", "*", "*", "binary-*", "Packages"))
+	privateKey, err := loadKey(privateKeyPath)
 	if err != nil {
-		return fmt.Errorf("failed to find Packages files: %w", err)
-	}
-	if len(files) == 0 {
-		return fmt.Errorf("no Packages files found in repository directory: %s", repoDir)
+		return nil, fmt.Errorf("failed to read private key: %w", err)
 	}
 
-	var packages []types.Package
+	publicKey, err := loadKey(filepath.Join(repoDir, "signing_key.asc"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read public key: %w", err)
+	}
+	keyRing := openpgp.EntityList{privateKey, publicKey}
+
+	files, err := filepath.Glob(filepath.Join(repoDir, "dists", "*", "InRelease"))
+	if err != nil || len(files) == 0 {
+		return nil, fmt.Errorf("no InRelease files found in repository directory: %s", repoDir)
+	}
+
+	repository := deb.NewRepository()
 
 	for _, file := range files {
 		reader, err := os.Open(file)
 		if err != nil {
-			return fmt.Errorf("failed to open Packages file: %w", err)
+			return nil, fmt.Errorf("failed to open InRelease file: %w", err)
 		}
 		defer reader.Close()
-		decoder, err := deb822.NewDecoder(reader, nil)
+
+		var debRelease types.Release
+		decoder, err := deb822.NewDecoder(reader, keyRing)
 		if err != nil {
-			return fmt.Errorf("failed to create decoder for Packages file: %w", err)
+			return nil, fmt.Errorf("failed to create decoder for InRelease file: %w", err)
 		}
 
-		var candidates []types.Package
-		if err := decoder.Decode(&candidates); err != nil {
-			return fmt.Errorf("failed to decode Packages file: %w", err)
+		if err = decoder.Decode(&debRelease); err != nil {
+			return nil, fmt.Errorf("failed to decode InRelease file: %w", err)
 		}
 
-		for _, candidate := range candidates {
-			found := slices.ContainsFunc(packages, func(pkg types.Package) bool {
-				return candidate.Compare(pkg) == 0
-			})
+		release := deb.NewRelease(debRelease)
+		repository.AddRelease(release)
 
-			if !found {
-				packages = append(packages, candidate)
+		for i := range release.Components {
+			component := &release.Components[i]
+			for _, arch := range release.Architectures {
+				reader, err := os.Open(filepath.Join(repoDir, "dists", release.Codename, component.Name, "binary-"+arch.String(), "Packages"))
+				if err != nil {
+					return nil, fmt.Errorf("failed to open Packages file: %w", err)
+				}
+				defer reader.Close()
+
+				component.AddArchitecture(arch)
+
+				decoder, err := deb822.NewDecoder(reader, nil)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create decoder for Packages file: %w", err)
+				}
+
+				var packages []types.Package
+				if err := decoder.Decode(&packages); err != nil {
+					return nil, fmt.Errorf("failed to decode Packages file: %w", err)
+				}
+
+				for _, pkg := range packages {
+					if err = component.AddPackage(pkg); err != nil {
+						return nil, fmt.Errorf("failed to add package to component: %w", err)
+					}
+				}
 			}
 		}
 	}
 
-	json.NewEncoder(os.Stdout).Encode(packages)
+	return repository, nil
+}
+
+func inspectRepository(repoDir, privateKeyPath string) error {
+	repository, err := decodeRepository(repoDir, privateKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to decode repository: %w", err)
+	}
+
+	var packages []types.Package
+
+	for _, release := range repository.Releases {
+		for _, component := range release.Components {
+			for _, arch := range component.Architectures {
+				for _, candidate := range arch.Packages {
+					found := slices.ContainsFunc(packages, func(pkg types.Package) bool {
+						return pkg.Compare(candidate) == 0
+					})
+					if !found {
+						packages = append(packages, candidate)
+					}
+				}
+			}
+		}
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(packages); err != nil {
+		return fmt.Errorf("failed to encode packages as JSON: %w", err)
+	}
 
 	return nil
 }

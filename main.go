@@ -770,8 +770,7 @@ func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 		release := deb.NewRelease(debRelease)
 		repository.AddRelease(release)
 
-		for i := range release.Components {
-			component := &release.Components[i]
+		for _, component := range release.Components {
 			for _, arch := range release.Architectures {
 				reader, err := os.Open(filepath.Join(repoDir, "dists", release.Codename, component.Name, "binary-"+arch.String(), "Packages"))
 				if err != nil {
@@ -779,7 +778,8 @@ func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 				}
 				defer reader.Close()
 
-				component.AddArchitecture(arch)
+				architecture := deb.NewArchitecture(arch)
+				component.AddArchitecture(architecture)
 
 				decoder, err := deb822.NewDecoder(reader, nil)
 				if err != nil {
@@ -792,7 +792,7 @@ func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 				}
 
 				for _, pkg := range packages {
-					if err = component.AddPackage(pkg); err != nil {
+					if err = component.AddPackage(&pkg); err != nil {
 						return nil, fmt.Errorf("failed to add package to component: %w", err)
 					}
 				}
@@ -816,10 +816,10 @@ func inspectRepository(repoDir, privateKeyPath string) error {
 			for _, arch := range component.Architectures {
 				for _, candidate := range arch.Packages {
 					found := slices.ContainsFunc(packages, func(pkg types.Package) bool {
-						return pkg.Compare(candidate) == 0
+						return pkg.Compare(*candidate) == 0
 					})
 					if !found {
-						packages = append(packages, candidate)
+						packages = append(packages, *candidate)
 					}
 				}
 			}

@@ -8,73 +8,79 @@ import (
 )
 
 type Repository struct {
-	Releases []Release
+	Releases []*Release
+	dirty    bool `json:"-"`
 }
 
 type Release struct {
 	types.Release
 
-	Components []Component
+	Components []*Component
+	dirty      bool        `json:"-"`
+	parent     *Repository `json:"-"`
 }
 
 type Component struct {
 	Name          string
-	Architectures []Architecture
+	Architectures []*Architecture
+	dirty         bool     `json:"-"`
+	parent        *Release `json:"-"`
 }
 
 type Architecture struct {
 	arch.Arch
-	Packages []types.Package
+	Packages []*types.Package
+	dirty    bool       `json:"-"`
+	parent   *Component `json:"-"`
 }
 
 func NewRepository() *Repository {
 	return &Repository{
-		Releases: make([]Release, 0),
+		Releases: make([]*Release, 0),
 	}
 }
 
-func NewRelease(debRelease types.Release) Release {
+func NewRelease(debRelease types.Release) *Release {
 	release := Release{
-		debRelease,
-		make([]Component, 0),
+		Release: debRelease,
 	}
 
 	for _, componentName := range debRelease.Components {
-		release.Components = append(release.Components, NewComponent(componentName))
+		release.AddComponent(NewComponent(componentName))
 	}
 
-	return release
+	return &release
 }
 
-func NewComponent(name string) Component {
-	return Component{
-		name,
-		make([]Architecture, 0),
-	}
-}
-
-func NewArchitecture(debArch arch.Arch) Architecture {
-	return Architecture{
-		Arch:     debArch,
-		Packages: make([]types.Package, 0),
+func NewComponent(name string) *Component {
+	return &Component{
+		Name: name,
 	}
 }
 
-func (r *Repository) AddRelease(debRelease Release) {
-	r.Releases = append(r.Releases, debRelease)
+func NewArchitecture(debArch arch.Arch) *Architecture {
+	return &Architecture{
+		Arch: debArch,
+	}
 }
 
-func (r *Release) AddComponent(component Component) {
+func (r *Repository) AddRelease(release *Release) {
+	release.parent = r
+	r.Releases = append(r.Releases, release)
+}
+
+func (r *Release) AddComponent(component *Component) {
+	component.parent = r
 	r.Components = append(r.Components, component)
 }
 
-func (c *Component) AddArchitecture(debArch arch.Arch) {
-	c.Architectures = append(c.Architectures, NewArchitecture(debArch))
+func (c *Component) AddArchitecture(architecture *Architecture) {
+	architecture.parent = c
+	c.Architectures = append(c.Architectures, architecture)
 }
 
-func (c *Component) AddPackage(pkg types.Package) error {
-	for i := range c.Architectures {
-		candidate := &c.Architectures[i]
+func (c *Component) AddPackage(pkg *types.Package) error {
+	for _, candidate := range c.Architectures {
 		if candidate.Is(&pkg.Architecture) {
 			candidate.Packages = append(candidate.Packages, pkg)
 
@@ -83,4 +89,76 @@ func (c *Component) AddPackage(pkg types.Package) error {
 	}
 
 	return fmt.Errorf("architecture %s not found in component %s", pkg.Architecture, c.Name)
+}
+
+func (r *Repository) MarkDirty() {
+	r.dirty = true
+}
+
+func (r *Release) MarkDirty() {
+	r.dirty = true
+
+	if r.parent != nil {
+		r.parent.MarkDirty()
+	}
+}
+
+func (c *Component) MarkDirty() {
+	c.dirty = true
+
+	if c.parent != nil {
+		c.parent.MarkDirty()
+	}
+}
+
+func (a *Architecture) MarkDirty() {
+	a.dirty = true
+
+	if a.parent != nil {
+		a.parent.MarkDirty()
+	}
+}
+
+func (r *Repository) IsDirty() bool {
+	return r.dirty
+}
+
+func (r *Release) IsDirty() bool {
+	return r.dirty
+}
+
+func (c *Component) IsDirty() bool {
+	return c.dirty
+}
+
+func (a *Architecture) IsDirty() bool {
+	return a.dirty
+}
+
+func (r *Repository) ClearDirty() {
+	r.dirty = false
+
+	for _, release := range r.Releases {
+		release.ClearDirty()
+	}
+}
+
+func (r *Release) ClearDirty() {
+	r.dirty = false
+
+	for _, component := range r.Components {
+		component.ClearDirty()
+	}
+}
+
+func (c *Component) ClearDirty() {
+	c.dirty = false
+
+	for _, architecture := range c.Architectures {
+		architecture.ClearDirty()
+	}
+}
+
+func (a *Architecture) ClearDirty() {
+	a.dirty = false
 }

@@ -729,21 +729,40 @@ func loadKey(path string) (*openpgp.Entity, error) {
 	return keyRing[0], nil
 }
 
+func loadKeyRing(privateKeyPath, publicKeyPath string) (openpgp.EntityList, error) {
+	keyRing := openpgp.EntityList{}
+	privateKey, privateKeyErr := loadKey(privateKeyPath)
+	if privateKeyErr == nil {
+		keyRing = append(keyRing, privateKey)
+	}
+
+	publicKey, publicKeyErr := loadKey(publicKeyPath)
+	if publicKeyErr == nil {
+		keyRing = append(keyRing, publicKey)
+	}
+
+	if privateKeyErr != nil && publicKeyErr != nil {
+		return keyRing, fmt.Errorf("failed to read both private and public keys: %w; %w", privateKeyErr, publicKeyErr)
+	}
+	if privateKeyErr != nil {
+		return keyRing, fmt.Errorf("failed to read private key: %w", privateKeyErr)
+	}
+	if publicKeyErr != nil {
+		return keyRing, fmt.Errorf("failed to read public key: %w", publicKeyErr)
+	}
+
+	return keyRing, nil
+}
+
 func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 	if dir, err := os.Stat(repoDir); err != nil || !dir.IsDir() {
 		return nil, fmt.Errorf("repository directory does not exist: %s", repoDir)
 	}
 
-	privateKey, err := loadKey(privateKeyPath)
+	keyRing, err := loadKeyRing(privateKeyPath, filepath.Join(repoDir, "signing_key.asc"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read private key: %w", err)
+		return nil, fmt.Errorf("failed to load key ring: %w", err)
 	}
-
-	publicKey, err := loadKey(filepath.Join(repoDir, "signing_key.asc"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read public key: %w", err)
-	}
-	keyRing := openpgp.EntityList{privateKey, publicKey}
 
 	files, err := filepath.Glob(filepath.Join(repoDir, "dists", "*", "InRelease"))
 	if err != nil || len(files) == 0 {

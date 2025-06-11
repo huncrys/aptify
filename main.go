@@ -703,8 +703,10 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 		source = source[:strings.Index(source, "(")]
 	}
 
+	source = strings.TrimSpace(source)
+
 	prefix := source[:1]
-	if strings.HasPrefix(source, "lib") {
+	if len(source) > 3 && strings.HasPrefix(source, "lib") {
 		prefix = source[:4]
 	}
 

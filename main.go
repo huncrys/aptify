@@ -754,7 +754,7 @@ func loadKeyRing(privateKeyPath, publicKeyPath string) (openpgp.EntityList, erro
 	return keyRing, nil
 }
 
-func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
+func loadRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 	if dir, err := os.Stat(repoDir); err != nil || !dir.IsDir() {
 		return nil, fmt.Errorf("repository directory does not exist: %s", repoDir)
 	}
@@ -824,8 +824,49 @@ func decodeRepository(repoDir, privateKeyPath string) (*deb.Repository, error) {
 	return repository, nil
 }
 
+func saveRepository(repoDir string, repository *deb.Repository, privateKeyPath string) error {
+	for _, release := range repository.Releases {
+		if !release.IsDirty() {
+			slog.Info("Skipping release, no changes detected", slog.String("codename", release.Codename))
+			continue
+		}
+
+		for _, component := range release.Components {
+			if !component.IsDirty() {
+				slog.Info("Skipping component, no changes detected",
+					slog.String("codename", release.Codename), slog.String("component", component.Name))
+				continue
+			}
+
+			for _, arch := range component.Architectures {
+				if !arch.IsDirty() {
+					slog.Info("Skipping architecture, no changes detected",
+						slog.String("codename", release.Codename),
+						slog.String("component", component.Name),
+						slog.String("architecture", arch.Arch.String()))
+					continue
+				}
+
+				// TODO: Write Packages file for the architecture.
+
+				arch.ClearDirty()
+			}
+
+			// TODO: Write Contents file for the component.
+
+			component.ClearDirty()
+		}
+
+		// TODO: Write InRelease file for the release.
+
+		release.ClearDirty()
+	}
+
+	return nil
+}
+
 func inspectRepository(repoDir, privateKeyPath string) error {
-	repository, err := decodeRepository(repoDir, privateKeyPath)
+	repository, err := loadRepository(repoDir, privateKeyPath)
 	if err != nil {
 		return fmt.Errorf("failed to decode repository: %w", err)
 	}

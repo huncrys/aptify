@@ -79,16 +79,31 @@ func (c *Component) AddArchitecture(architecture *Architecture) {
 	c.Architectures = append(c.Architectures, architecture)
 }
 
-func (c *Component) AddPackage(pkg *types.Package) error {
+func (c *Component) addPackage(pkg *types.Package, dirty bool) error {
 	for _, candidate := range c.Architectures {
 		if candidate.Is(&pkg.Architecture) {
 			candidate.Packages = append(candidate.Packages, pkg)
-
+			if dirty {
+				candidate.MarkDirty()
+			}
 			return nil
 		}
 	}
 
 	return fmt.Errorf("architecture %s not found in component %s", pkg.Architecture, c.Name)
+}
+
+func (c *Component) AddPackage(pkg *types.Package) error {
+	return c.addPackage(pkg, false)
+}
+
+func (c *Component) AddNewArchitecture(architecture *Architecture) {
+	c.AddArchitecture(architecture)
+	architecture.MarkDirty()
+}
+
+func (c *Component) AddNewPackage(pkg *types.Package) error {
+	return c.addPackage(pkg, true)
 }
 
 func (r *Repository) MarkDirty() {

@@ -60,6 +60,9 @@ type ComponentConfig struct {
 	// Packages is the list of file system paths/glob patterns to deb files that
 	// will be included within the component.
 	Packages []string
+	// Maximum number of versions to keep for each package in this component.
+	// If not specified, all versions will be kept.
+	MaxVersions uint `yaml:"max_versions,omitempty"`
 }
 
 func (r *Repository) GetAPIVersion() string {

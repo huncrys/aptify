@@ -235,8 +235,10 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 
 	packagesForReleaseComponent := make(map[string][]types.Package)
 	newPackagesForReleaseComponent := make(map[string][]types.Package)
+	removedPackagesForReleaseComponent := make(map[string][]types.Package)
 	archsForReleaseComponent := make(map[string]map[string]bool)
 	pkgPoolPaths := make(map[string]string)
+	poolReferences := make(map[string]int)
 
 	// Load existing repository directory
 	if dir, err := os.Stat(repoDir); err == nil && dir.IsDir() {
@@ -285,6 +287,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 
 							// Get the architectures from the Packages file.
 							for _, pkg := range packages {
+								poolReferences[pkg.Filename]++
 								archsForReleaseComponent[releaseComponent][pkg.Architecture.String()] = true
 							}
 						}
@@ -372,6 +375,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 					} else {
 						pkg.Filename = existingPoolPath
 					}
+					poolReferences[pkg.Filename]++
 
 					// Get the size of the package file.
 					fi, err := os.Stat(filepath.Join(repoDir, pkg.Filename))
@@ -382,6 +386,57 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 
 					packagesForReleaseComponent[releaseComponent] = append(packagesForReleaseComponent[releaseComponent], *pkg)
 					newPackagesForReleaseComponent[releaseComponent] = append(newPackagesForReleaseComponent[releaseComponent], *pkg)
+				}
+			}
+		}
+	}
+
+	for _, releaseConf := range conf.Releases {
+		for _, componentConf := range releaseConf.Components {
+			if componentConf.MaxVersions == 0 {
+				continue
+			}
+
+			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
+			versions := make(map[string][]types.Package)
+			for _, pkg := range packagesForReleaseComponent[releaseComponent] {
+				// Use the package name and architecture as the key.
+				key := fmt.Sprintf("%s/%s", pkg.Name, pkg.Architecture.String())
+				// If the key already exists, append the package to the list.
+				versions[key] = append(versions[key], pkg)
+			}
+
+			for _, pkgs := range versions {
+				countMustRemove := max(len(pkgs)-int(componentConf.MaxVersions), 0)
+				if countMustRemove == 0 {
+					slog.Debug("No packages to remove for component",
+						slog.String("release_component", releaseComponent),
+						slog.Int("max_versions", int(componentConf.MaxVersions)),
+						slog.Int("current_versions", len(pkgs)),
+					)
+				}
+
+				// Sort the packages by version.
+				slices.SortStableFunc(pkgs, func(a, b types.Package) int {
+					return a.Compare(b)
+				})
+
+				for _, pkgToRemove := range pkgs[:countMustRemove] {
+					slog.Info("Removing package",
+						slog.String("name", pkgToRemove.Name),
+						slog.String("version", pkgToRemove.Version.String()),
+						slog.String("architecture", pkgToRemove.Architecture.String()),
+						slog.String("filename", pkgToRemove.Filename),
+					)
+
+					comparator := func(a types.Package) bool {
+						return a.Compare(pkgToRemove) == 0
+					}
+					packagesForReleaseComponent[releaseComponent] = slices.DeleteFunc(packagesForReleaseComponent[releaseComponent], comparator)
+					newPackagesForReleaseComponent[releaseComponent] = slices.DeleteFunc(newPackagesForReleaseComponent[releaseComponent], comparator)
+
+					removedPackagesForReleaseComponent[releaseComponent] = append(removedPackagesForReleaseComponent[releaseComponent], pkgToRemove)
+					poolReferences[pkgToRemove.Filename]--
 				}
 			}
 		}
@@ -424,8 +479,18 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				}
 				newPackages = filteredNewPackages
 
-				if len(newPackages) == 0 {
-					slog.Info("Skipping index generation, no new packages found",
+				removedPackages := removedPackagesForReleaseComponent[releaseComponent]
+				// Filter out packages that don't match the architecture.
+				filteredRemovedPackages := make([]types.Package, 0, len(removedPackages))
+				for _, pkg := range removedPackages {
+					if pkg.Architecture.String() == architecture {
+						filteredRemovedPackages = append(filteredRemovedPackages, pkg)
+					}
+				}
+				removedPackages = filteredRemovedPackages
+
+				if len(newPackages) == 0 && len(removedPackages) == 0 {
+					slog.Info("Skipping index generation, no new or removed packages found",
 						slog.String("dir", archDir),
 					)
 
@@ -440,11 +505,15 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				sort.Slice(newPackages, func(i, j int) bool {
 					return newPackages[i].Compare(newPackages[j]) < 0
 				})
+				sort.Slice(removedPackages, func(i, j int) bool {
+					return removedPackages[i].Compare(removedPackages[j]) < 0
+				})
 
 				if err := writePackagesIndice(archDir, packages); err != nil {
 					return fmt.Errorf("failed to write package lists: %w", err)
 				}
 
+				// TODO: Re-write contents file for removed packages.
 				if err := writeContentsIndice(repoDir, componentDir, newPackages, architecture); err != nil {
 					return fmt.Errorf("failed to write contents file: %w", err)
 				}
@@ -465,6 +534,18 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 
 		if err := writeReleaseFile(releaseDir, releaseConf, architectures, privateKey); err != nil {
 			return fmt.Errorf("failed to write release: %w", err)
+		}
+	}
+
+	for poolPath, references := range poolReferences {
+		if references > 0 {
+			continue
+		}
+
+		slog.Info("Removing unused package file",
+			slog.String("file", poolPath))
+		if err := os.Remove(filepath.Join(repoDir, poolPath)); err != nil {
+			return fmt.Errorf("failed to remove unused package file: %w", err)
 		}
 	}
 
@@ -548,7 +629,7 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 	return nil
 }
 
-func writeContentsIndice(repoDir, componentDir string, packages []types.Package, arch string) error {
+func writeContentsIndice(repoDir, componentDir string, newPackages []types.Package, arch string) error {
 	f, err := os.OpenFile(filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch)), os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return fmt.Errorf("failed to open Contents file: %w", err)
@@ -572,8 +653,8 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 				return fmt.Errorf("invalid Contents line: %s", line)
 			}
 			path := parts[0]
-			packages := strings.Split(parts[1], ",")
-			for _, pkg := range packages {
+			packageNames := strings.Split(parts[1], ",")
+			for _, pkg := range packageNames {
 				if !slices.Contains(packageFiles[pkg], path) {
 					packageFiles[pkg] = append(packageFiles[pkg], path)
 				}
@@ -591,7 +672,7 @@ func writeContentsIndice(repoDir, componentDir string, packages []types.Package,
 
 	slog.Info("Collecting package contents", slog.String("dir", componentDir))
 
-	for _, pkg := range packages {
+	for _, pkg := range newPackages {
 		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
 		if err != nil {
 			return fmt.Errorf("failed to get package contents: %w", err)

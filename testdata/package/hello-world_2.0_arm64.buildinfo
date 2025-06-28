@@ -1,20 +1,20 @@
 Format: 1.0
 Source: hello-world
 Binary: hello-world hello-world-dbgsym
-Architecture: amd64
-Version: 1.0
+Architecture: arm64
+Version: 2.0
 Checksums-Md5:
- ac277206808b68de9f1c24ea2ead3e96 2188 hello-world-dbgsym_1.0_amd64.deb
- 18308776fc20649b7227fac14af589a4 3152 hello-world_1.0_amd64.deb
+ 59b17b1d7e55f3f5392c61c19a769888 2436 hello-world-dbgsym_2.0_arm64.deb
+ 78b0636438274d9f579317c7c96b69fe 3404 hello-world_2.0_arm64.deb
 Checksums-Sha1:
- fcc81864ee059de9dd3d4600f598cfcb9344fbe4 2188 hello-world-dbgsym_1.0_amd64.deb
- f63e524021c16f0c4ef50311f625a4bf327fe3ae 3152 hello-world_1.0_amd64.deb
+ 8b30a5ab96625f7a6b2f2a1ad2e1206b9dad1d6d 2436 hello-world-dbgsym_2.0_arm64.deb
+ 0968640587cb7ccd178b5724d30d50dcd77f656d 3404 hello-world_2.0_arm64.deb
 Checksums-Sha256:
- 0cb96ac0150e13137298e3f8eead42112e6066e2f7bd785853fbda7f47d64742 2188 hello-world-dbgsym_1.0_amd64.deb
- ceb079605ac5b875fe048d32c04d16b540673496afabae052afaec5db72765ae 3152 hello-world_1.0_amd64.deb
+ a6b3f22254e953bfc831db2bdc5beb03c0dc07f82b1a8d1402d4e2e3186d5dc1 2436 hello-world-dbgsym_2.0_arm64.deb
+ 530ae0a34a891e9f7fc6fdc5dcc29e7d1b9f33ba11dece1b26c2ddb7302dfba1 3404 hello-world_2.0_arm64.deb
 Build-Origin: Debian
 Build-Architecture: amd64
-Build-Date: Sat, 28 Jun 2025 22:04:05 +0200
+Build-Date: Sat, 28 Jun 2025 22:04:38 +0200
 Installed-Build-Depends:
  base-files (= 13.8),
  base-passwd (= 3.6.7),
@@ -132,4 +132,4 @@ Installed-Build-Depends:
 Environment:
  DEB_BUILD_OPTIONS="parallel=16"
  LANG="en_US.UTF-8"
- SOURCE_DATE_EPOCH="1720942496"
+ SOURCE_DATE_EPOCH="1751130727"

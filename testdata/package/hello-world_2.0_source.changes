@@ -1,0 +1,25 @@
+Format: 1.8
+Date: Sat, 28 Jun 2025 19:12:07 +0200
+Source: hello-world
+Architecture: source
+Version: 2.0
+Distribution: unstable
+Urgency: medium
+Maintainer: Damian Peckett <damian@pecke.tt>
+Changed-By: Kristof Bach <crys@crys.hu>
+Changes:
+ hello-world (2.0) unstable; urgency=medium
+ .
+   * Another release.
+Checksums-Sha1:
+ e930601779a6bd01fc6087158b2c4a4be6530397 484 hello-world_2.0.dsc
+ 626d06b9725f0d72d8e0043fa86c9265e40105ee 1460 hello-world_2.0.tar.xz
+ ee1c74c52e74fe2a470bb5c4579a7e989a309b41 3526 hello-world_2.0_source.buildinfo
+Checksums-Sha256:
+ 07f4e3c32f175849a1b31dc98b8f71032503450ea5fb7ba8c6ad87f3b14f11f5 484 hello-world_2.0.dsc
+ 0a54d53a111981c9441d89be972ec328541a0224d554f774fac9297a34ba7af5 1460 hello-world_2.0.tar.xz
+ 613c7df596e4f2f7a3948136decc88cc9d6c88d2a1be2088a19f33f0323a49d0 3526 hello-world_2.0_source.buildinfo
+Files:
+ a5a889c4b4e634dc24d894430d1bd4ef 484 utils optional hello-world_2.0.dsc
+ fe294cc97a283c622f95a2f90d0b1cd8 1460 utils optional hello-world_2.0.tar.xz
+ 3a3818b7a3a411d7f5bdd75f71371164 3526 utils optional hello-world_2.0_source.buildinfo

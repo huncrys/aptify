@@ -15,14 +15,14 @@ Changes:
  .
    * Initial release.
 Checksums-Sha1:
- cd53291bcb2f35cf8f300c580a407faa77c1ea60 2172 hello-world-dbgsym_1.0_amd64.deb
- e5ed7fe51596748135cf5c5fd57dae71e7ff1829 4366 hello-world_1.0_amd64.buildinfo
- d96bb85fd9d9c685888cc57a53e1e46ab5e1d99d 3164 hello-world_1.0_amd64.deb
+ fcc81864ee059de9dd3d4600f598cfcb9344fbe4 2188 hello-world-dbgsym_1.0_amd64.deb
+ e5b4f10dd79a415ddd505f2fe81ce3408318269d 3841 hello-world_1.0_amd64.buildinfo
+ f63e524021c16f0c4ef50311f625a4bf327fe3ae 3152 hello-world_1.0_amd64.deb
 Checksums-Sha256:
- 67f933db8f851df32ab8d7bfff70d693c79946f162f99e5a19db50184048ca29 2172 hello-world-dbgsym_1.0_amd64.deb
- 8437babbca90a551234fe327fec2a16b03d1cda3c713c648b8a7977919af6ee4 4366 hello-world_1.0_amd64.buildinfo
- 7330f4a9e34c2a9e3e1dca1516907d925387ca5d45773e81eed0ef7964390e69 3164 hello-world_1.0_amd64.deb
+ 0cb96ac0150e13137298e3f8eead42112e6066e2f7bd785853fbda7f47d64742 2188 hello-world-dbgsym_1.0_amd64.deb
+ a3934230c8a5d18a0fbd309f56c97bd541401f45318a4a8a64f80f470ac5ed97 3841 hello-world_1.0_amd64.buildinfo
+ ceb079605ac5b875fe048d32c04d16b540673496afabae052afaec5db72765ae 3152 hello-world_1.0_amd64.deb
 Files:
- faefe5211663843f5472337bbd2f76e3 2172 debug optional hello-world-dbgsym_1.0_amd64.deb
- 14bb24727c459350d00cf4525a26bdf6 4366 utils optional hello-world_1.0_amd64.buildinfo
- 0d430cf464cb61d283e2202b74359eee 3164 utils optional hello-world_1.0_amd64.deb
+ ac277206808b68de9f1c24ea2ead3e96 2188 debug optional hello-world-dbgsym_1.0_amd64.deb
+ 1e6644b03b49635bc0e2f57c05267a96 3841 utils optional hello-world_1.0_amd64.buildinfo
+ 18308776fc20649b7227fac14af589a4 3152 utils optional hello-world_1.0_amd64.deb

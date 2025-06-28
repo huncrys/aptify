@@ -502,9 +502,17 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 					return fmt.Errorf("failed to write package lists: %w", err)
 				}
 
-				// TODO: Re-write contents file for removed packages.
+				// TODO: Re-write contents file for removed packages
+				if len(newPackages) == 0 {
+					slog.Info("Skipping Contents file generation, no new packages found",
+						slog.String("dir", archDir),
+					)
+
+					continue
+				}
+
 				if err := writeContentsIndice(repoDir, componentDir, newPackages, architecture); err != nil {
-					return fmt.Errorf("failed to write contents file: %w", err)
+					return fmt.Errorf("failed to write Contents file: %w", err)
 				}
 			}
 		}

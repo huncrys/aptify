@@ -244,54 +244,39 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 	if dir, err := os.Stat(repoDir); err == nil && dir.IsDir() {
 		slog.Info("Loading existing repository", slog.String("dir", repoDir))
 
-		for _, releaseConf := range conf.Releases {
-			for _, componentConf := range releaseConf.Components {
-				releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
+		if paths, err := filepath.Glob(filepath.Join(repoDir, "dists", "*", "*", "binary-*", "Packages")); err == nil {
+			for _, packagesFile := range paths {
+				parts := strings.FieldsFunc(packagesFile, func(c rune) bool { return os.PathSeparator == c })
+				releaseComponent := strings.Join(parts[len(parts)-4:len(parts)-2], "/")
+				slog.Debug("Found existing Packages file",
+					slog.String("file", packagesFile),
+					slog.String("release_component", releaseComponent))
 
-				componentDir := filepath.Join(repoDir, "dists", releaseConf.Name, componentConf.Name)
 				if _, ok := archsForReleaseComponent[releaseComponent]; !ok {
 					archsForReleaseComponent[releaseComponent] = make(map[string]bool)
 				}
-				archDirs, err := filepath.Glob(filepath.Join(componentDir, "binary-*"))
 
+				reader, err := os.Open(packagesFile)
 				if err != nil {
-					continue
+					return fmt.Errorf("failed to open Packages file: %w", err)
+				}
+				defer reader.Close()
+				decoder, err := deb822.NewDecoder(reader, nil)
+				if err != nil {
+					return fmt.Errorf("failed to create decoder for Packages file: %w", err)
 				}
 
-				for _, archDir := range archDirs {
-					if dir, err := os.Stat(archDir); err == nil && dir.IsDir() {
-						slog.Debug("Found existing architecture directory",
-							slog.String("dir", archDir), slog.String("release_component", releaseComponent))
-						// Read the Packages file to get existing packages.
-						packagesFile := filepath.Join(archDir, "Packages")
-						if fi, err := os.Stat(packagesFile); err == nil && !fi.IsDir() {
-							slog.Debug("Found existing Packages file",
-								slog.String("file", packagesFile), slog.String("release_component", releaseComponent))
+				var packages []types.Package
+				if err := decoder.Decode(&packages); err != nil {
+					return fmt.Errorf("failed to decode Packages file: %w", err)
+				}
 
-							reader, err := os.Open(packagesFile)
-							if err != nil {
-								return fmt.Errorf("failed to open Packages file: %w", err)
-							}
-							defer reader.Close()
-							decoder, err := deb822.NewDecoder(reader, nil)
-							if err != nil {
-								return fmt.Errorf("failed to create decoder for Packages file: %w", err)
-							}
+				packagesForReleaseComponent[releaseComponent] = append(packagesForReleaseComponent[releaseComponent], packages...)
 
-							var packages []types.Package
-							if err := decoder.Decode(&packages); err != nil {
-								return fmt.Errorf("failed to decode Packages file: %w", err)
-							}
-
-							packagesForReleaseComponent[releaseComponent] = append(packagesForReleaseComponent[releaseComponent], packages...)
-
-							// Get the architectures from the Packages file.
-							for _, pkg := range packages {
-								poolReferences[pkg.Filename]++
-								archsForReleaseComponent[releaseComponent][pkg.Architecture.String()] = true
-							}
-						}
-					}
+				// Get the architectures from the Packages file.
+				for _, pkg := range packages {
+					poolReferences[pkg.Filename]++
+					archsForReleaseComponent[releaseComponent][pkg.Architecture.String()] = true
 				}
 			}
 		}
@@ -409,7 +394,9 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 			for _, pkgs := range versions {
 				countMustRemove := max(len(pkgs)-int(componentConf.MaxVersions), 0)
 				if countMustRemove == 0 {
-					slog.Debug("No packages to remove for component",
+					slog.Debug("No versions to remove for package",
+						slog.String("package", pkgs[0].Name),
+						slog.String("architecture", pkgs[0].Architecture.String()),
 						slog.String("release_component", releaseComponent),
 						slog.Int("max_versions", int(componentConf.MaxVersions)),
 						slog.Int("current_versions", len(pkgs)),
@@ -422,10 +409,10 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				})
 
 				for _, pkgToRemove := range pkgs[:countMustRemove] {
-					slog.Info("Removing package",
+					slog.Info("Removing old package version",
 						slog.String("name", pkgToRemove.Name),
-						slog.String("version", pkgToRemove.Version.String()),
 						slog.String("architecture", pkgToRemove.Architecture.String()),
+						slog.String("version", pkgToRemove.Version.String()),
 						slog.String("filename", pkgToRemove.Filename),
 					)
 
@@ -542,7 +529,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 			continue
 		}
 
-		slog.Info("Removing unused package file",
+		slog.Info("Removing unused file from pool",
 			slog.String("file", poolPath))
 		if err := os.Remove(filepath.Join(repoDir, poolPath)); err != nil {
 			return fmt.Errorf("failed to remove unused package file: %w", err)

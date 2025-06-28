@@ -439,6 +439,8 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
 
 			for architecture := range archsForReleaseComponent[releaseComponent] {
+				architectures = append(architectures, arch.MustParse(architecture))
+
 				componentDir := filepath.Join(repoDir, "dists", releaseConf.Name, componentConf.Name)
 				archDir := filepath.Join(componentDir, "binary-"+architecture)
 
@@ -504,8 +506,6 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				if err := writeContentsIndice(repoDir, componentDir, newPackages, architecture); err != nil {
 					return fmt.Errorf("failed to write contents file: %w", err)
 				}
-
-				architectures = append(architectures, arch.MustParse(architecture))
 			}
 		}
 

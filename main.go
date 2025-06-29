@@ -518,16 +518,12 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 		}
 
 		releaseDir := filepath.Join(repoDir, "dists", releaseConf.Name)
-		if !modified {
-			slog.Info("Skipping release generation, no changes", slog.String("dir", releaseDir))
-			continue
-		}
 
 		if err := os.MkdirAll(releaseDir, 0o755); err != nil {
 			return fmt.Errorf("failed to create release directory: %w", err)
 		}
 
-		if err := writeReleaseFile(releaseDir, releaseConf, architectures, privateKey); err != nil {
+		if err := writeReleaseFile(releaseDir, modified, conf, releaseConf, architectures, privateKey); err != nil {
 			return fmt.Errorf("failed to write release: %w", err)
 		}
 	}
@@ -542,6 +538,39 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 		if err := os.Remove(filepath.Join(repoDir, poolPath)); err != nil {
 			return fmt.Errorf("failed to remove unused package file: %w", err)
 		}
+	}
+
+	if conf.HasChangelogs() {
+		changelogReferences, err := writeChangelogs(repoDir, packagesForReleaseComponent)
+		if err != nil {
+			return fmt.Errorf("failed to write changelogs: %w", err)
+		}
+
+		changelogDir := filepath.Join(repoDir, "changelogs")
+		filepath.WalkDir(changelogDir, func(changelogFile string, d os.DirEntry, err error) error {
+			if err != nil {
+				return fmt.Errorf("failed to find changelog files: %w", err)
+			}
+
+			if d.IsDir() || !strings.HasSuffix(changelogFile, ".changelog") {
+				return nil
+			}
+
+			if slices.Contains(changelogReferences, changelogFile) {
+				slog.Debug("Changelog file is referenced, skipping removal",
+					slog.String("file", changelogFile))
+
+				return nil
+			}
+
+			slog.Info("Removing unused changelog file",
+				slog.String("file", changelogFile))
+			if err := os.Remove(changelogFile); err != nil {
+				return fmt.Errorf("failed to remove unused changelog file: %w", err)
+			}
+
+			return nil
+		})
 	}
 
 	// Save a copy of the signing key.
@@ -721,13 +750,42 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 	return nil
 }
 
-func writeReleaseFile(releaseDir string, releaseConf v1alpha1.ReleaseConfig, architectures []arch.Arch, privateKey *openpgp.Entity) error {
-	slog.Info("Writing Release file", slog.String("dir", releaseDir))
+func readReleaseFile(releaseDir string, privateKey *openpgp.Entity) (*types.Release, error) {
+	releaseFile, err := os.Open(filepath.Join(releaseDir, "InRelease"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open Release file: %w", err)
+	}
+	defer releaseFile.Close()
 
+	decoder, err := deb822.NewDecoder(releaseFile, openpgp.EntityList{privateKey})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create decoder for Release file: %w", err)
+	}
+
+	var release types.Release
+	if err := decoder.Decode(&release); err != nil {
+		return nil, fmt.Errorf("failed to decode Release file: %w", err)
+	}
+
+	return &release, nil
+}
+
+func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repository, releaseConf v1alpha1.ReleaseConfig, architectures []arch.Arch, privateKey *openpgp.Entity) error {
 	var components []string
 	for _, component := range releaseConf.Components {
 		components = append(components, component.Name)
 	}
+
+	changelogs := "no"
+	if conf.HasChangelogs() {
+		changelogs = fmt.Sprintf("%s/changelogs/@CHANGEPATH@.changelog", conf.URL)
+	}
+
+	slices.SortFunc(architectures, func(a, b arch.Arch) int {
+		return strings.Compare(a.String(), b.String())
+	})
+
+	slices.Sort(components)
 
 	r := types.Release{
 		Origin:        releaseConf.Origin,
@@ -735,12 +793,38 @@ func writeReleaseFile(releaseDir string, releaseConf v1alpha1.ReleaseConfig, arc
 		Suite:         releaseConf.Suite,
 		Version:       releaseConf.Version,
 		Codename:      releaseConf.Name,
-		Changelogs:    "no",
+		Changelogs:    changelogs,
 		Date:          time.Time(stdtime.Now().UTC()),
 		Architectures: list.SpaceDelimited[arch.Arch](architectures),
 		Components:    list.SpaceDelimited[string](components),
 		Description:   releaseConf.Description,
 	}
+
+	if existing, err := readReleaseFile(releaseDir, privateKey); err == nil {
+		slices.SortFunc(existing.Architectures, func(a, b arch.Arch) int {
+			return strings.Compare(a.String(), b.String())
+		})
+
+		slices.Sort(existing.Components)
+
+		modified = modified || existing.Origin != r.Origin ||
+			existing.Label != r.Label ||
+			existing.Suite != r.Suite ||
+			existing.Version != r.Version ||
+			existing.Codename != r.Codename ||
+			existing.Changelogs != r.Changelogs ||
+			!slices.Equal(existing.Architectures, r.Architectures) ||
+			!slices.Equal(existing.Components, r.Components) ||
+			existing.Description != r.Description
+	}
+
+	if !modified {
+		slog.Info("Skipping release generation, no changes", slog.String("dir", releaseDir))
+
+		return nil
+	}
+
+	slog.Info("Writing Release file", slog.String("dir", releaseDir))
 
 	var err error
 	r.SHA256, err = sha256sum.Directory(releaseDir, []string{"*/binary-*/Packages*", "*/Contents-*"})
@@ -767,6 +851,97 @@ func writeReleaseFile(releaseDir string, releaseConf v1alpha1.ReleaseConfig, arc
 	return nil
 }
 
+func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]types.Package) ([]string, error) {
+	packages := make(map[string]types.Package)
+	for releaseComponent, releasePkgs := range packagesForReleaseComponent {
+		component := strings.Split(releaseComponent, "/")[1]
+		for _, pkg := range releasePkgs {
+			path := changelogPathForPackage(component, &pkg)
+			if _, ok := packages[path]; !ok {
+				packages[path] = pkg
+			}
+		}
+	}
+
+	dir := filepath.Join(repoDir, "changelogs")
+	slog.Info("Updating changelogs", slog.String("dir", dir))
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create changelogs directory: %w", err)
+	}
+
+	referencedFiles := make([]string, 0, len(packages))
+	written := 0
+	for path, pkg := range packages {
+		changelogPath := filepath.Join(dir, path)
+		if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
+			slog.Info("Creating changelog file", slog.String("file", changelogPath))
+
+			sourceOrName := strings.TrimSpace(pkg.Source)
+			if sourceOrName == "" {
+				sourceOrName = strings.TrimSpace(pkg.Name)
+			}
+			changelog, changelogTime, err := deb.GetPackageChangelog(sourceOrName, filepath.Join(repoDir, pkg.Filename))
+			if err != nil {
+				if !os.IsNotExist(err) {
+					slog.Warn("Failed to get package changelog",
+						slog.String("package", pkg.Name),
+						slog.String("version", pkg.Version.String()),
+						slog.String("architecture", pkg.Architecture.String()),
+						slog.String("error", err.Error()),
+					)
+
+					continue
+				}
+
+				slog.Warn("Changelog not found, generating dummy changelog",
+					slog.String("package", pkg.Name),
+					slog.String("version", pkg.Version.String()),
+					slog.String("architecture", pkg.Architecture.String()),
+				)
+
+				// Create an empty changelog file if not found.
+				changelog = fmt.Appendf(nil, "%s (%s) unstable; urgency=medium\n\n  * No changelog available.\n\n -- %s  %s\n",
+					sourceOrName, pkg.Version, pkg.Maintainer,
+					changelogTime.Format(stdtime.RFC1123Z))
+			}
+
+			if err := os.MkdirAll(filepath.Dir(changelogPath), 0o755); err != nil {
+				return nil, fmt.Errorf("failed to create changelog subdirectory: %w", err)
+			}
+
+			changelogFile, err := os.Create(changelogPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create changelog file: %w", err)
+			}
+			defer changelogFile.Close()
+
+			if err := os.WriteFile(changelogPath, changelog, 0o644); err != nil {
+				return nil, fmt.Errorf("failed to write changelog file: %w", err)
+			}
+
+			if err := os.Chtimes(changelogPath, stdtime.Time{}, changelogTime); err != nil {
+				return nil, fmt.Errorf("failed to set changelog file modification time: %w", err)
+			}
+
+			written++
+		}
+
+		referencedFiles = append(referencedFiles, changelogPath)
+	}
+
+	if written > 0 {
+		slog.Info("Wrote changelogs",
+			slog.Int("count", written),
+			slog.String("dir", dir))
+	} else {
+		slog.Info("No changelogs written, all files already exist")
+	}
+
+	slices.Sort(referencedFiles)
+	return slices.Compact(referencedFiles), nil
+}
+
 func poolPathForPackage(componentName string, pkg *types.Package) string {
 	source := strings.TrimSpace(pkg.Source)
 	if pkg.Source == "" {
@@ -785,6 +960,25 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 
 	return filepath.Join("pool", componentName, prefix, source,
 		fmt.Sprintf("%s_%s_%s.deb", pkg.Name, pkg.Version, pkg.Architecture))
+}
+
+func changelogPathForPackage(componentName string, pkg *types.Package) string {
+	source := strings.TrimSpace(pkg.Source)
+	if pkg.Source == "" {
+		source = strings.TrimSpace(pkg.Name)
+	}
+
+	// If the source has a version, lop it off.
+	if strings.Contains(source, "(") {
+		source = source[:strings.Index(source, "(")]
+	}
+
+	prefix := source[:1]
+	if strings.HasPrefix(source, "lib") {
+		prefix = source[:4]
+	}
+
+	return filepath.Join(componentName, prefix, source, pkg.Name+"_"+pkg.Version.String()+".changelog")
 }
 
 func loadPrivateKey(path string) (*openpgp.Entity, error) {

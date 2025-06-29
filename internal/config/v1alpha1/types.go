@@ -28,6 +28,10 @@ const APIVersion = "aptify/v1alpha1"
 
 type Repository struct {
 	types.TypeMeta `yaml:",inline"`
+	// URL is the public URL of the repository.
+	URL string
+	// Whether to generate changelogs
+	Changelogs bool
 	// Releases is the list of releases to generate.
 	Releases []ReleaseConfig
 }
@@ -78,6 +82,10 @@ func (r *Repository) PopulateTypeMeta() {
 		APIVersion: APIVersion,
 		Kind:       "Repository",
 	}
+}
+
+func (r *Repository) HasChangelogs() bool {
+	return r.Changelogs && r.URL != ""
 }
 
 func GetConfigByKind(kind string) (types.Config, error) {

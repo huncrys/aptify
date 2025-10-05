@@ -978,7 +978,7 @@ func changelogPathForPackage(componentName string, pkg *types.Package) string {
 		prefix = source[:4]
 	}
 
-	return filepath.Join(componentName, prefix, source, pkg.Name+"_"+pkg.Version.String()+".changelog")
+	return filepath.Join(componentName, prefix, source, pkg.Name+"_"+pkg.Version.StringWithoutEpoch()+".changelog")
 }
 
 func loadPrivateKey(path string) (*openpgp.Entity, error) {

@@ -25,7 +25,9 @@ builds:
       - arm64
 
 archives:
-  - formats:
+  - name_template: |-
+      {{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
+    formats:
       - binary
     files:
       - none**

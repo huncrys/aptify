@@ -26,11 +26,9 @@ builds:
 
 archives:
   - formats:
-      - tar.gz
       - binary
     files:
-      - LICENSE
-      - README.md
+      - none**
 
 changelog:
   sort: asc

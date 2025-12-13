@@ -1,8 +1,8 @@
 module github.com/dpeckett/aptify
 
-go 1.24
+go 1.25.0
 
-toolchain go1.24.2
+toolchain go1.25.5
 
 replace github.com/dpeckett/deb822 => github.com/huncrys/deb822 v0.5.4-0.20250530160141-f79f881311e2
 

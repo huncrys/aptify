@@ -14,15 +14,15 @@ gitlab_urls:
 builds:
   - env:
       - CGO_ENABLED=0
-    ldflags:
-      - -s
-      - -w
-      - -X github.com/dpeckett/aptify/internal/constants.Version={{.Version}}
     goos:
       - linux
     goarch:
       - amd64
       - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/dpeckett/aptify/internal/constants.Version={{.Version}}
 
 archives:
   - name_template: |-
@@ -30,7 +30,7 @@ archives:
     formats:
       - binary
     files:
-      - none**
+      - none*
 
 changelog:
   sort: asc
@@ -41,4 +41,3 @@ changelog:
       - 'Merge pull request'
       - 'Merge branch'
       - 'go mod tidy'
-

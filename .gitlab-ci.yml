@@ -6,11 +6,13 @@ release:
     name: goreleaser/goreleaser:v2.13.1@sha256:d417ee0cb74e8ccb4ca4c10e40a663849b56bb437e6dab410e0053800dcc0514
     entrypoint: [""]
   rules:
-    - if: $GITLAB_TOKEN && $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG
   variables:
     # Disable shallow cloning so that goreleaser can diff between tags to
     # generate a changelog.
     GIT_DEPTH: 0
+    # Provide so that goreleaser uses the job token
+    GITLAB_TOKEN: $CI_JOB_TOKEN
   script:
     - docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
     - goreleaser release --clean

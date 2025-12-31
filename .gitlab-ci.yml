@@ -1,10 +1,26 @@
 stages:
+#   - test
   - release
+
+variables:
+  FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR: "true"
+
+default:
+  image:
+    name: $CI_REGISTRY/images/goreleaser:stable
+    entrypoint: [""]
+
+# test:
+#   stage: test
+#   script:
+#     - gotestsum --junitfile report.xml --format testname
+#   artifacts:
+#     when: always
+#     reports:
+#       junit: report.xml
+
 release:
   stage: release
-  image:
-    name: goreleaser/goreleaser:v2.13.1@sha256:d417ee0cb74e8ccb4ca4c10e40a663849b56bb437e6dab410e0053800dcc0514
-    entrypoint: [""]
   rules:
     - if: $CI_COMMIT_TAG
   variables:
@@ -14,5 +30,4 @@ release:
     # Provide so that goreleaser uses the job token
     GITLAB_TOKEN: $CI_JOB_TOKEN
   script:
-    - docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
     - goreleaser release --clean

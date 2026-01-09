@@ -31,7 +31,7 @@ import (
 	"github.com/dpeckett/uncompr"
 )
 
-func GetPackageChangelog(name, path string) ([]byte, time.Time, error) {
+func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("failed to open package file: %w", err)
@@ -101,6 +101,11 @@ func GetPackageChangelog(name, path string) ([]byte, time.Time, error) {
 	candidates := []string{
 		filepath.Join("usr", "share", "doc", name, "changelog.Debian.gz"),
 		filepath.Join("usr", "share", "doc", name, "changelog.gz"),
+	}
+
+	if source != name && source != "" {
+		candidates = append(candidates, filepath.Join("usr", "share", "doc", source, "changelog.Debian.gz"))
+		candidates = append(candidates, filepath.Join("usr", "share", "doc", source, "changelog.gz"))
 	}
 
 	for _, candidate := range candidates {

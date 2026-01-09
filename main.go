@@ -881,7 +881,7 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 			if sourceOrName == "" {
 				sourceOrName = strings.TrimSpace(pkg.Name)
 			}
-			changelog, changelogTime, err := deb.GetPackageChangelog(sourceOrName, filepath.Join(repoDir, pkg.Filename))
+			changelog, changelogTime, err := deb.GetPackageChangelog(pkg.Source, pkg.Name, filepath.Join(repoDir, pkg.Filename))
 			if err != nil {
 				if !os.IsNotExist(err) {
 					slog.Warn("Failed to get package changelog",

@@ -11,7 +11,7 @@ require (
 	github.com/dpeckett/uncompr v0.5.0
 	github.com/otiai10/copy v1.14.1
 	github.com/urfave/cli/v2 v2.27.7
-	gopkg.in/yaml.v3 v3.0.1
+	go.yaml.in/yaml/v4 v4.0.0-rc.3
 	oaklab.hu/debian/deb822 v0.6.0
 )
 

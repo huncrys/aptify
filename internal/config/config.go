@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"io"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 	configtypes "oaklab.hu/debian/aptify/internal/config/types"
 	latestconfig "oaklab.hu/debian/aptify/internal/config/v1alpha1"
 )

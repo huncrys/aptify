@@ -1,20 +1,18 @@
-module github.com/dpeckett/aptify
+module oaklab.hu/debian/aptify
 
 go 1.25.0
 
 toolchain go1.25.5
 
-replace github.com/dpeckett/deb822 => github.com/huncrys/deb822 v0.5.4-0.20260111195205-731d2c83bf31
-
 require (
 	github.com/ProtonMail/go-crypto v1.3.0
 	github.com/adrg/xdg v0.5.3
 	github.com/dpeckett/archivefs v0.11.1
-	github.com/dpeckett/deb822 v0.5.3
 	github.com/dpeckett/uncompr v0.5.0
 	github.com/otiai10/copy v1.14.1
 	github.com/urfave/cli/v2 v2.27.7
 	gopkg.in/yaml.v3 v3.0.1
+	oaklab.hu/debian/deb822 v0.6.0
 )
 
 require (

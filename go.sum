@@ -12,8 +12,6 @@ github.com/dpeckett/archivefs v0.11.1 h1:yEkigpGprxuVrPeaqeDlHq8rzUwoILRv1sM/0iI
 github.com/dpeckett/archivefs v0.11.1/go.mod h1:Jcv0qViFG7BHxAsXPzfIIoeJURxmhmxUcAlv1xRvxn0=
 github.com/dpeckett/uncompr v0.5.0 h1:nibMydzi7Pn0kbA1p38lI6H8cs4CGyn3LOFRXhPWKBU=
 github.com/dpeckett/uncompr v0.5.0/go.mod h1:Z5Kv7L7JDX8dyTWmd5tIG/TuBPkPgkD4dko7Ya2n3UI=
-github.com/huncrys/deb822 v0.5.4-0.20260111195205-731d2c83bf31 h1:nAJto8WA30dTrGSzvDUh+hLghBT7Zeutf0gRWioGv8E=
-github.com/huncrys/deb822 v0.5.4-0.20260111195205-731d2c83bf31/go.mod h1:qr9z8vTYckG007BGH1+QHxuXdlHc0FbfhepdCBlxZiY=
 github.com/klauspost/compress v1.18.2 h1:iiPHWW0YrcFgpBYhsA6D1+fqHssJscY/Tm/y2Uqnapk=
 github.com/klauspost/compress v1.18.2/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
 github.com/otiai10/copy v1.14.1 h1:5/7E6qsUMBaH5AnQ0sSLzzTg1oTECmcCmT6lvF45Na8=
@@ -46,3 +44,5 @@ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+oaklab.hu/debian/deb822 v0.6.0 h1:2lLyi6NLNmXbl2UUT1MyoMp4HKu4ULMRD4W94VblOQQ=
+oaklab.hu/debian/deb822 v0.6.0/go.mod h1:8VjOO4+7cD2x1J0KL9/YJJiYCUJO4gtEzzVFCmmhUhI=

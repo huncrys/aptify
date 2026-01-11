@@ -28,9 +28,9 @@ import (
 
 	"github.com/dpeckett/archivefs/arfs"
 	"github.com/dpeckett/archivefs/tarfs"
-	"github.com/dpeckett/deb822"
-	"github.com/dpeckett/deb822/types"
 	"github.com/dpeckett/uncompr"
+	"oaklab.hu/debian/deb822"
+	"oaklab.hu/debian/deb822/types"
 )
 
 func GetMetadata(path string) (*types.Package, error) {

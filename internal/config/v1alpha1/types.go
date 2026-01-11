@@ -21,7 +21,7 @@ package v1alpha1
 import (
 	"fmt"
 
-	"github.com/dpeckett/aptify/internal/config/types"
+	"oaklab.hu/debian/aptify/internal/config/types"
 )
 
 const APIVersion = "aptify/v1alpha1"

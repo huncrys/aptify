@@ -23,7 +23,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dpeckett/deb822/types/filehash"
+	"oaklab.hu/debian/deb822/types/filehash"
 )
 
 // Directory returns the sha256sum of all files in a directory.

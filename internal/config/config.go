@@ -22,9 +22,9 @@ import (
 	"fmt"
 	"io"
 
-	configtypes "github.com/dpeckett/aptify/internal/config/types"
-	latestconfig "github.com/dpeckett/aptify/internal/config/v1alpha1"
 	"gopkg.in/yaml.v3"
+	configtypes "oaklab.hu/debian/aptify/internal/config/types"
+	latestconfig "oaklab.hu/debian/aptify/internal/config/v1alpha1"
 )
 
 // FromYAML reads the given reader and returns a config object.

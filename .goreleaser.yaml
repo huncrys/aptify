@@ -22,7 +22,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/dpeckett/aptify/internal/constants.Version={{.Version}}
+      - -s -w -X oaklab.hu/debian/aptify/internal/constants.Version={{.Version}}
 
 archives:
   - name_template: |-

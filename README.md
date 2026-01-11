@@ -5,24 +5,17 @@ a list of deb files.
 
 ## Installation
 
-### From APT
-
-Add my [apt repository](https://github.com/dpeckett/apt.dpeckett.dev?tab=readme-ov-file#usage) to your system.
-
-Then install aptify:
-
-*Currently packages are only published for Debian 12 (Bookworm).*
+### Go install
 
 ```shell
-sudo apt update
-sudo apt install aptify
+go install oaklab.hu/debian/aptify@latest
 ```
 
 ### GitHub Releases
 
-Download statically linked binaries from the GitHub releases page: 
+Download statically linked binaries from the releases page:
 
-[Latest Release](https://github.com/dpeckett/aptify/releases/latest)
+[Latest Release](https://oaklab.hu/debian/aptify/-/releases/permalink/latest)
 
 ## Usage
 
@@ -99,10 +92,3 @@ Packages can now be installed from the repository.
 sudo apt update
 sudo apt install hello-world
 ```
-
-## Telemetry
-
-By default aptify gathers anonymous crash and usage statistics. This anonymized
-data is processed on our servers within the EU and is not shared with third
-parties. You can opt out of telemetry by setting the `DO_NOT_TRACK=1`
-environment variable.

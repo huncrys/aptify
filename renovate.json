@@ -1,9 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended",
-    "customManagers:dockerfileVersions",
-    "group:all"
+    "oaklab/renovate-presets",
+    "oaklab/renovate-presets:go"
   ],
   "reviewers": [
     "crys"

@@ -35,7 +35,7 @@ The resulting key will be written to your `$XDG_CONFIG_HOME/aptify/` directory. 
 You'll need a simple YAML file describing the repository you want to create.
 
 A demonstration file is provided in the examples directory. Schema for the
-repository configuration is defined in the 
+repository configuration is defined in the
 [v1alpha1/types.go](./internal/config/v1alpha1/types.go) file.
 
 ```shell
@@ -50,7 +50,7 @@ The recommended way to serve the repository is to use [caddy](https://caddyserve
 
 An example Caddyfile is provided below, replace `apt.example.com` with your domain:
 
-```
+```caddyfile
 https://apt.example.com {
   root * /var/lib/aptify/repo
   file_server {

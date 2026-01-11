@@ -11,9 +11,9 @@ a list of deb files.
 go install oaklab.hu/debian/aptify@latest
 ```
 
-### GitHub Releases
+### GitLab Releases
 
-Download statically linked binaries from the releases page:
+Download statically linked binaries from the GitLab releases page:
 
 [Latest Release](https://oaklab.hu/debian/aptify/-/releases/permalink/latest)
 

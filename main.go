@@ -877,11 +877,19 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 		if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
 			slog.Info("Creating changelog file", slog.String("file", changelogPath))
 
-			sourceOrName := pkg.CleanSource()
+			pkgSource := ""
+			pkgVer := &pkg.Version
+			if pkg.Source != nil && pkg.Source.Name != "" {
+				pkgSource = pkg.Source.Name
+				if pkg.Source.Version != nil {
+					pkgVer = pkg.Source.Version
+				}
+			}
+			sourceOrName := pkgSource
 			if sourceOrName == "" {
 				sourceOrName = strings.TrimSpace(pkg.Name)
 			}
-			changelog, changelogTime, err := deb.GetPackageChangelog(pkg.CleanSource(), pkg.Name, filepath.Join(repoDir, pkg.Filename))
+			changelog, changelogTime, err := deb.GetPackageChangelog(sourceOrName, pkg.Name, filepath.Join(repoDir, pkg.Filename))
 			if err != nil {
 				if !os.IsNotExist(err) {
 					slog.Warn("Failed to get package changelog",
@@ -902,7 +910,7 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 
 				// Create an empty changelog file if not found.
 				changelog = fmt.Appendf(nil, "%s (%s) unstable; urgency=medium\n\n  * No changelog available.\n\n -- %s  %s\n",
-					sourceOrName, pkg.Version, pkg.Maintainer,
+					sourceOrName, pkgVer, pkg.Maintainer,
 					changelogTime.Format(stdtime.RFC1123Z))
 			}
 
@@ -943,9 +951,12 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 }
 
 func poolPathForPackage(componentName string, pkg *types.Package) string {
-	source := pkg.CleanSource()
-	if source == "" {
-		source = strings.TrimSpace(pkg.Name)
+	pkgName := strings.TrimSpace(pkg.Name)
+	var source string
+	if pkg.Source != nil && pkg.Source.Name != "" {
+		source = pkg.Source.Name
+	} else {
+		source = pkgName
 	}
 
 	prefix := source[:1]
@@ -954,21 +965,28 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 	}
 
 	return filepath.Join("pool", componentName, prefix, source,
-		fmt.Sprintf("%s_%s_%s.deb", pkg.Name, pkg.Version, pkg.Architecture))
+		fmt.Sprintf("%s_%s_%s.deb", pkgName, pkg.Version, pkg.Architecture))
 }
 
 func changelogPathForPackage(componentName string, pkg *types.Package) string {
-	source := pkg.CleanSource()
-	if source == "" {
-		source = strings.TrimSpace(pkg.Name)
+	var pkgSource string
+	var pkgVer string
+	if pkg.Source != nil && pkg.Source.Name != "" {
+		pkgSource = pkg.Source.Name
+		if pkg.Source.Version != nil {
+			pkgVer = pkg.Source.Version.StringWithoutEpoch()
+		}
+	} else {
+		pkgSource = strings.TrimSpace(pkg.Name)
+		pkgVer = pkg.Version.StringWithoutEpoch()
 	}
 
-	prefix := source[:1]
-	if strings.HasPrefix(source, "lib") {
-		prefix = source[:4]
+	prefix := pkgSource[:1]
+	if strings.HasPrefix(pkgSource, "lib") {
+		prefix = pkgSource[:4]
 	}
 
-	return filepath.Join(componentName, prefix, source, source+"_"+pkg.Version.StringWithoutEpoch()+".changelog")
+	return filepath.Join(componentName, prefix, pkgSource, pkgSource+"_"+pkgVer+".changelog")
 }
 
 func loadPrivateKey(path string) (*openpgp.Entity, error) {

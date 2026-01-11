@@ -970,15 +970,14 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 
 func changelogPathForPackage(componentName string, pkg *types.Package) string {
 	var pkgSource string
-	var pkgVer string
+	pkgVer := &pkg.Version
 	if pkg.Source != nil && pkg.Source.Name != "" {
 		pkgSource = pkg.Source.Name
 		if pkg.Source.Version != nil {
-			pkgVer = pkg.Source.Version.StringWithoutEpoch()
+			pkgVer = pkg.Source.Version
 		}
 	} else {
 		pkgSource = strings.TrimSpace(pkg.Name)
-		pkgVer = pkg.Version.StringWithoutEpoch()
 	}
 
 	prefix := pkgSource[:1]
@@ -986,7 +985,7 @@ func changelogPathForPackage(componentName string, pkg *types.Package) string {
 		prefix = pkgSource[:4]
 	}
 
-	return filepath.Join(componentName, prefix, pkgSource, pkgSource+"_"+pkgVer+".changelog")
+	return filepath.Join(componentName, prefix, pkgSource, pkgSource+"_"+pkgVer.StringWithoutEpoch()+".changelog")
 }
 
 func loadPrivateKey(path string) (*openpgp.Entity, error) {

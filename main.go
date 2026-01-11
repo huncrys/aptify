@@ -877,11 +877,11 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 		if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
 			slog.Info("Creating changelog file", slog.String("file", changelogPath))
 
-			sourceOrName := strings.TrimSpace(pkg.Source)
+			sourceOrName := pkg.CleanSource()
 			if sourceOrName == "" {
 				sourceOrName = strings.TrimSpace(pkg.Name)
 			}
-			changelog, changelogTime, err := deb.GetPackageChangelog(pkg.Source, pkg.Name, filepath.Join(repoDir, pkg.Filename))
+			changelog, changelogTime, err := deb.GetPackageChangelog(pkg.CleanSource(), pkg.Name, filepath.Join(repoDir, pkg.Filename))
 			if err != nil {
 				if !os.IsNotExist(err) {
 					slog.Warn("Failed to get package changelog",
@@ -943,14 +943,9 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 }
 
 func poolPathForPackage(componentName string, pkg *types.Package) string {
-	source := strings.TrimSpace(pkg.Source)
-	if pkg.Source == "" {
+	source := pkg.CleanSource()
+	if source == "" {
 		source = strings.TrimSpace(pkg.Name)
-	}
-
-	// If the source has a version, lop it off.
-	if strings.Contains(source, "(") {
-		source = source[:strings.Index(source, "(")]
 	}
 
 	prefix := source[:1]
@@ -963,14 +958,9 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 }
 
 func changelogPathForPackage(componentName string, pkg *types.Package) string {
-	source := strings.TrimSpace(pkg.Source)
-	if pkg.Source == "" {
+	source := pkg.CleanSource()
+	if source == "" {
 		source = strings.TrimSpace(pkg.Name)
-	}
-
-	// If the source has a version, lop it off.
-	if strings.Contains(source, "(") {
-		source = source[:strings.Index(source, "(")]
 	}
 
 	prefix := source[:1]

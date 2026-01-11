@@ -4,7 +4,7 @@ go 1.25.0
 
 toolchain go1.25.5
 
-replace github.com/dpeckett/deb822 => github.com/huncrys/deb822 v0.5.4-0.20260111183152-3dbb23c80878
+replace github.com/dpeckett/deb822 => github.com/huncrys/deb822 v0.5.4-0.20260111195205-731d2c83bf31
 
 require (
 	github.com/ProtonMail/go-crypto v1.3.0

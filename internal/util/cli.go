@@ -19,7 +19,7 @@
 package util
 
 import (
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 // BeforeAll runs multiple BeforeFuncs in order

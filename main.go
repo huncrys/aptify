@@ -38,7 +38,7 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/dpeckett/uncompr"
 	cp "github.com/otiai10/copy"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 	"oaklab.hu/debian/aptify/internal/config"
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/constants"

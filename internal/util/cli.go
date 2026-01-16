@@ -19,18 +19,20 @@
 package util
 
 import (
-	"github.com/urfave/cli/v2"
+	"context"
+
+	"github.com/urfave/cli/v3"
 )
 
 // BeforeAll runs multiple BeforeFuncs in order
 func BeforeAll(fns ...cli.BeforeFunc) cli.BeforeFunc {
-	return func(c *cli.Context) error {
+	return func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		for _, fn := range fns {
-			if err := fn(c); err != nil {
-				return err
+			if ctx, err := fn(ctx, cmd); err != nil {
+				return ctx, err
 			}
 		}
 
-		return nil
+		return ctx, nil
 	}
 }

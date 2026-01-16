@@ -21,6 +21,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,7 +39,7 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/dpeckett/uncompr"
 	cp "github.com/otiai10/copy"
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 	"oaklab.hu/debian/aptify/internal/config"
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/constants"
@@ -53,45 +54,33 @@ import (
 )
 
 func main() {
-	defaultConfDir, _ := xdg.ConfigFile("aptify")
-
-	persistentFlags := []cli.Flag{
-		&cli.GenericFlag{
-			Name:    "log-level",
-			EnvVars: []string{"LOG_LEVEL"},
-			Usage:   "Set the log verbosity level",
-			Value:   util.FromSlogLevel(slog.LevelInfo),
-		},
-		&cli.StringFlag{
-			Name:    "config-dir",
-			EnvVars: []string{"CONFIG_DIR"},
-			Usage:   "Directory to store configuration",
-			Value:   defaultConfDir,
-		},
+	defaultConfDir, err := xdg.ConfigFile("aptify")
+	if err != nil {
+		panic(fmt.Errorf("failed to get default config dir: %w", err))
 	}
 
-	initLogger := func(c *cli.Context) error {
+	initLogger := func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: (*slog.Level)(c.Generic("log-level").(*util.LevelFlag)),
+			Level: (*slog.Level)(cmd.Value("log-level").(*util.LevelFlag)),
 		})))
 
-		return nil
+		return ctx, nil
 	}
 
-	initConfDir := func(c *cli.Context) error {
-		confDir := c.String("config-dir")
+	initConfDir := func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		confDir := cmd.String("config-dir")
 		if confDir == "" {
-			return fmt.Errorf("no configuration directory specified")
+			return ctx, fmt.Errorf("no configuration directory specified")
 		}
 
 		if err := os.MkdirAll(confDir, 0o700); err != nil {
-			return fmt.Errorf("failed to create configuration directory: %w", err)
+			return ctx, fmt.Errorf("failed to create configuration directory: %w", err)
 		}
 
-		return nil
+		return ctx, nil
 	}
 
-	app := &cli.App{
+	cmd := &cli.Command{
 		Name:    "aptify",
 		Usage:   "Create apt repositories from Debian packages",
 		Version: constants.Version,
@@ -99,7 +88,7 @@ func main() {
 			{
 				Name:  "init-keys",
 				Usage: "Generate a new GPG key pair for signing releases",
-				Flags: append([]cli.Flag{
+				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "name",
 						Usage: "Name of the key owner",
@@ -112,9 +101,9 @@ func main() {
 						Name:  "email",
 						Usage: "Email address of the key owner",
 					},
-				}, persistentFlags...),
+				},
 				Before: util.BeforeAll(initLogger, initConfDir),
-				Action: func(c *cli.Context) error {
+				Action: func(ctx context.Context, cmd *cli.Command) error {
 					entityConfig := &packet.Config{
 						RSABits: 4096,
 						Time:    stdtime.Now,
@@ -123,12 +112,12 @@ func main() {
 					slog.Info("Generating RSA key")
 
 					// Create a new entity.
-					entity, err := openpgp.NewEntity(c.String("name"), c.String("comment"), c.String("email"), entityConfig)
+					entity, err := openpgp.NewEntity(cmd.String("name"), cmd.String("comment"), cmd.String("email"), entityConfig)
 					if err != nil {
 						return fmt.Errorf("failed to create entity: %w", err)
 					}
 
-					slog.Info("Saving key pair", slog.String("dir", c.String("config-dir")))
+					slog.Info("Saving key pair", slog.String("dir", cmd.String("config-dir")))
 
 					// Serialize the private key.
 					var privateKey bytes.Buffer
@@ -143,7 +132,7 @@ func main() {
 						return fmt.Errorf("failed to close private key writer: %w", err)
 					}
 
-					confDir := c.String("config-dir")
+					confDir := cmd.String("config-dir")
 
 					// Write private key to file.
 					if err := os.WriteFile(filepath.Join(confDir, "aptify_private.asc"), privateKey.Bytes(), 0o600); err != nil {
@@ -156,7 +145,7 @@ func main() {
 			{
 				Name:  "build",
 				Usage: "Build a Debian repository from a configuration file",
-				Flags: append([]cli.Flag{
+				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "config",
 						Aliases:  []string{"c"},
@@ -169,18 +158,18 @@ func main() {
 						Usage:   "Directory to store the repository",
 						Value:   "repository",
 					},
-				}, persistentFlags...),
+				},
 				Before: util.BeforeAll(initLogger, initConfDir),
-				Action: func(c *cli.Context) error {
-					repoDir := c.String("repository-dir")
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					repoDir := cmd.String("repository-dir")
 
 					slog.Info("Building repository", slog.String("dir", repoDir))
 
-					privateKeyPath := filepath.Join(c.String("config-dir"), "aptify_private.asc")
+					privateKeyPath := filepath.Join(cmd.String("config-dir"), "aptify_private.asc")
 
 					return buildRepository(
 						repoDir,
-						c.String("config"),
+						cmd.String("config"),
 						privateKeyPath,
 					)
 				},
@@ -188,25 +177,39 @@ func main() {
 			{
 				Name:  "inspect",
 				Usage: "Dump all packages in the repository as JSON",
-				Flags: append([]cli.Flag{
+				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:    "repository-dir",
 						Aliases: []string{"d"},
 						Usage:   "Directory containing the repository",
 						Value:   "repository",
 					},
-				}, persistentFlags...),
+				},
 				Before: util.BeforeAll(initLogger),
-				Action: func(c *cli.Context) error {
-					repoDir := c.String("repository-dir")
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					repoDir := cmd.String("repository-dir")
 
 					return inspectRepository(repoDir)
 				},
 			},
 		},
+		Flags: []cli.Flag{
+			&cli.GenericFlag{
+				Name:    "log-level",
+				Sources: cli.EnvVars("LOG_LEVEL"),
+				Usage:   "Set the log verbosity level",
+				Value:   util.FromSlogLevel(slog.LevelInfo),
+			},
+			&cli.StringFlag{
+				Name:    "config-dir",
+				Sources: cli.EnvVars("CONFIG_DIR"),
+				Usage:   "Directory to store configuration",
+				Value:   defaultConfDir,
+			},
+		},
 	}
 
-	if err := app.Run(os.Args); err != nil {
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		slog.Error("Error", slog.Any("error", err))
 		os.Exit(1)
 	}

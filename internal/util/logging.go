@@ -35,6 +35,10 @@ func (f *LevelFlag) Set(value string) error {
 	return (*slog.Level)(f).UnmarshalText([]byte(strings.ToUpper(value)))
 }
 
+func (f *LevelFlag) Get() any {
+	return f
+}
+
 func (f *LevelFlag) String() string {
 	return (*slog.Level)(f).String()
 }

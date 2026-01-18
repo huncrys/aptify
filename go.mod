@@ -10,7 +10,7 @@ require (
 	github.com/dpeckett/archivefs v0.11.1
 	github.com/dpeckett/uncompr v0.5.0
 	github.com/otiai10/copy v1.14.1
-	github.com/urfave/cli/v3 v3.6.1
+	github.com/urfave/cli/v3 v3.6.2
 	go.yaml.in/yaml/v4 v4.0.0-rc.3
 	oaklab.hu/debian/deb822 v0.6.0
 )

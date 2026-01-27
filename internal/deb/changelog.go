@@ -19,6 +19,7 @@
 package deb
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +31,8 @@ import (
 	"github.com/dpeckett/archivefs/tarfs"
 	"github.com/dpeckett/uncompr"
 )
+
+var ErrChangelogSymlink = errors.New("changelog folder is a symlink")
 
 func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 	f, err := os.Open(path)
@@ -112,6 +115,13 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 		changelogFile, err := dataArchiveFS.Open(candidate)
 		if err != nil {
 			if os.IsNotExist(err) {
+				for _, linkcandidate := range []string{filepath.Dir(candidate), candidate} {
+					if stat, err := dataArchiveFS.StatLink(linkcandidate); err == nil {
+						if stat.Mode()&os.ModeSymlink != 0 {
+							return nil, time.Time{}, ErrChangelogSymlink
+						}
+					}
+				}
 				continue
 			}
 			return nil, time.Time{}, fmt.Errorf("failed to open changelog file: %w", err)

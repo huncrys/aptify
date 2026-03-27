@@ -291,6 +291,19 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force bool) error
 				}
 			}
 		}
+
+		// Deduplicate packagesForReleaseComponent
+		for releaseComponent, packages := range packagesForReleaseComponent {
+			uniquePackages := make([]types.Package, 0, len(packages))
+			for _, pkg := range packages {
+				if !slices.ContainsFunc(uniquePackages, func(existingPkg types.Package) bool {
+					return pkg.Compare(existingPkg) == 0
+				}) {
+					uniquePackages = append(uniquePackages, pkg)
+				}
+			}
+			packagesForReleaseComponent[releaseComponent] = uniquePackages
+		}
 	}
 
 	// Copy packages to the pool directory.
@@ -398,8 +411,12 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force bool) error
 			for _, pkg := range packagesForReleaseComponent[releaseComponent] {
 				// Use the package name and architecture as the key.
 				key := fmt.Sprintf("%s/%s", pkg.Name, pkg.Architecture.String())
-				// If the key already exists, append the package to the list.
-				versions[key] = append(versions[key], pkg)
+
+				if !slices.ContainsFunc(versions[key], func(existingPkg types.Package) bool {
+					return pkg.Compare(existingPkg) == 0
+				}) {
+					versions[key] = append(versions[key], pkg)
+				}
 			}
 
 			for _, pkgs := range versions {
@@ -710,7 +727,7 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 	for _, pkg := range newPackages {
 		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
 		if err != nil {
-			return fmt.Errorf("failed to get package contents: %w", err)
+			return fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
 		}
 
 		for k := range packageFiles {

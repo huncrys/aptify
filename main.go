@@ -236,6 +236,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 		return fmt.Errorf("failed to read config: %w", err)
 	}
 
+	archAll := new(arch.MustParse("all"))
 	packagesForReleaseComponent := make(map[string][]types.Package)
 	newPackagesForReleaseComponent := make(map[string][]types.Package)
 	removedPackagesForReleaseComponent := make(map[string][]types.Package)
@@ -455,7 +456,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				// Filter out packages that don't match the architecture.
 				filteredPackages := make([]types.Package, 0, len(packages))
 				for _, pkg := range packages {
-					if pkg.Architecture.String() == architecture {
+					if pkg.Architecture.Is(archAll) || pkg.Architecture.String() == architecture {
 						filteredPackages = append(filteredPackages, pkg)
 					}
 				}
@@ -465,7 +466,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				// Filter out packages that don't match the architecture.
 				filteredNewPackages := make([]types.Package, 0, len(newPackages))
 				for _, pkg := range newPackages {
-					if pkg.Architecture.String() == architecture {
+					if pkg.Architecture.Is(archAll) || pkg.Architecture.String() == architecture {
 						filteredNewPackages = append(filteredNewPackages, pkg)
 					}
 				}
@@ -475,7 +476,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				// Filter out packages that don't match the architecture.
 				filteredRemovedPackages := make([]types.Package, 0, len(removedPackages))
 				for _, pkg := range removedPackages {
-					if pkg.Architecture.String() == architecture {
+					if pkg.Architecture.Is(archAll) || pkg.Architecture.String() == architecture {
 						filteredRemovedPackages = append(filteredRemovedPackages, pkg)
 					}
 				}

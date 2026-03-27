@@ -158,6 +158,12 @@ func main() {
 						Usage:   "Directory to store the repository",
 						Value:   "repository",
 					},
+					&cli.BoolFlag{
+						Name:    "force",
+						Aliases: []string{"f"},
+						Usage:   "Force rebuild of all indices, even if no changes are detected",
+						Value:   false,
+					},
 				},
 				Before: util.BeforeAll(initLogger, initConfDir),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -171,6 +177,7 @@ func main() {
 						repoDir,
 						cmd.String("config"),
 						privateKeyPath,
+						cmd.Bool("force"),
 					)
 				},
 			},
@@ -215,7 +222,7 @@ func main() {
 	}
 }
 
-func buildRepository(repoDir, confPath, privateKeyPath string) error {
+func buildRepository(repoDir, confPath, privateKeyPath string, force bool) error {
 	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
 	}
@@ -482,7 +489,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				}
 				removedPackages = filteredRemovedPackages
 
-				if len(newPackages) == 0 && len(removedPackages) == 0 {
+				if !force && len(newPackages) == 0 && len(removedPackages) == 0 {
 					slog.Info("Skipping index generation, no new or removed packages found",
 						slog.String("dir", archDir),
 					)
@@ -507,7 +514,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				}
 
 				// TODO: Re-write contents file for removed packages
-				if len(newPackages) == 0 {
+				if !force && len(newPackages) == 0 {
 					slog.Info("Skipping Contents file generation, no new packages found",
 						slog.String("dir", archDir),
 					)

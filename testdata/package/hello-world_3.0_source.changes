@@ -1,0 +1,25 @@
+Format: 1.8
+Date: Fri, 27 Mar 2026 06:53:46 +0100
+Source: hello-world
+Architecture: source
+Version: 3.0
+Distribution: unstable
+Urgency: medium
+Maintainer: Damian Peckett <damian@pecke.tt>
+Changed-By: Kristof Bach <crys@crys.hu>
+Changes:
+ hello-world (3.0) unstable; urgency=medium
+ .
+   * Yet another release.
+Checksums-Sha1:
+ 719e7e76135a35f2e353c57dde0b9cc5b6bac51a 484 hello-world_3.0.dsc
+ 4468872cb5e18a3d867514c877f1058d6e5c0903 4460 hello-world_3.0.tar.xz
+ 77f65d7dd4d85342b4bd77c88415d29f84e2ee7d 3597 hello-world_3.0_source.buildinfo
+Checksums-Sha256:
+ 25bc719cca74b4ef00720708e871c75e2470465e2a8e85b1dd357941df5ab330 484 hello-world_3.0.dsc
+ 8fdba1749e4cd17f5ee04d1e4b2c01295f93a02762ebb7ad0ee5908e6ef8d97b 4460 hello-world_3.0.tar.xz
+ 8a5bd9baba42e8a866db8753a6881d5bf1ebf8ab825b9ae03e6896d9230ccf72 3597 hello-world_3.0_source.buildinfo
+Files:
+ a134b86d30ed2dbdda6f2f872a6b61f2 484 utils optional hello-world_3.0.dsc
+ 60baf3ac7b5c8ec0621b51f13488ebf9 4460 utils optional hello-world_3.0.tar.xz
+ a2dbda948e091a5ff2d1ad54c3e44e16 3597 utils optional hello-world_3.0_source.buildinfo

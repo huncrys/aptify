@@ -1,0 +1,25 @@
+Format: 1.8
+Date: Fri, 27 Mar 2026 06:53:46 +0100
+Source: hello-world
+Binary: hello-world
+Architecture: all
+Version: 3.0
+Distribution: unstable
+Urgency: medium
+Maintainer: Damian Peckett <damian@pecke.tt>
+Changed-By: Kristof Bach <crys@crys.hu>
+Description:
+ hello-world - A simple Hello World program
+Changes:
+ hello-world (3.0) unstable; urgency=medium
+ .
+   * Yet another release.
+Checksums-Sha1:
+ 3caea2c618dc0c944cf1b90ed641287fb0a3ecc0 1860 hello-world_3.0_all.deb
+ 1890648e19dd52dc910888b04283dff89a4ce880 3629 hello-world_3.0_arm64.buildinfo
+Checksums-Sha256:
+ abc25be9dd9a2e813ba6d72f5bb8790caa698b5b5c573432281b94a4bd3298f4 1860 hello-world_3.0_all.deb
+ 87f3deb986799b24f944d0630f713b76d6e79accc823255d56db406e496f8516 3629 hello-world_3.0_arm64.buildinfo
+Files:
+ d143c8b10dccf65149cebddbd33d34ba 1860 utils optional hello-world_3.0_all.deb
+ 10b38ef4b71856afc3f1771f8e071cb8 3629 utils optional hello-world_3.0_arm64.buildinfo

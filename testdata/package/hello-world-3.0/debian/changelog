@@ -1,0 +1,17 @@
+hello-world (3.0) unstable; urgency=medium
+
+  * Yet another release.
+
+ -- Kristof Bach <crys@crys.hu>  Fri, 27 Mar 2026 06:53:46 +0100
+
+hello-world (2.0) unstable; urgency=medium
+
+  * Another release.
+
+ -- Kristof Bach <crys@crys.hu>  Sat, 28 Jun 2025 19:12:07 +0200
+
+hello-world (1.0) unstable; urgency=medium
+
+  * Initial release.
+
+ -- Damian Peckett <damian@pecke.tt>  Sun, 14 Jul 2024 09:34:56 +0200

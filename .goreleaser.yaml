@@ -1,6 +1,9 @@
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 version: 2
 
+env:
+  - CI_REGISTRY_IMAGE={{ if index .Env "CI_REGISTRY_IMAGE"  }}{{ .Env.CI_REGISTRY_IMAGE }}{{ else }}{{ .ProjectName }}{{ end }}
+
 before:
   hooks:
     - go mod tidy
@@ -32,6 +35,14 @@ archives:
       - binary
     files:
       - none*
+
+dockers_v2:
+  - images:
+      - '{{ .Env.CI_REGISTRY_IMAGE }}'
+    tags:
+      - '{{ with .Version }}v{{ . }}{{ end }}'
+      - '{{ with .Major }}v{{ .Major }}{{ end }}'
+      - '{{ with .Minor }}v{{ .Major }}.{{ .Minor }}{{ end }}'
 
 changelog:
   sort: asc

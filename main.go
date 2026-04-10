@@ -164,6 +164,12 @@ func main() {
 						Usage:   "Force rebuild of all indices, even if no changes are detected",
 						Value:   false,
 					},
+					&cli.BoolFlag{
+						Name:    "reread",
+						Aliases: []string{"r"},
+						Usage:   "Re-read all package files",
+						Value:   false,
+					},
 				},
 				Before: util.BeforeAll(initLogger, initConfDir),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -178,6 +184,7 @@ func main() {
 						cmd.String("config"),
 						privateKeyPath,
 						cmd.Bool("force"),
+						cmd.Bool("reread"),
 					)
 				},
 			},
@@ -222,7 +229,7 @@ func main() {
 	}
 }
 
-func buildRepository(repoDir, confPath, privateKeyPath string, force bool) error {
+func buildRepository(repoDir, confPath, privateKeyPath string, force, reread bool) error {
 	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
 	}
@@ -299,6 +306,17 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force bool) error
 				if !slices.ContainsFunc(uniquePackages, func(existingPkg types.Package) bool {
 					return pkg.Compare(existingPkg) == 0
 				}) {
+					if reread {
+						pkgPath := filepath.Join(repoDir, pkg.Filename)
+						if freshPkg, err := deb.GetMetadata(pkgPath); err != nil {
+							return fmt.Errorf("failed to reread package metadata: %w", err)
+						} else {
+							freshPkg.SHA256 = pkg.SHA256
+							freshPkg.Filename = pkg.Filename
+							freshPkg.Size = pkg.Size
+							pkg = *freshPkg
+						}
+					}
 					uniquePackages = append(uniquePackages, pkg)
 				}
 			}

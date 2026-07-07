@@ -2,7 +2,7 @@ module oaklab.hu/debian/aptify
 
 go 1.26.0
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/ProtonMail/go-crypto v1.4.1

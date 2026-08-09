@@ -6,7 +6,7 @@ before:
     - go mod tidy
 
 gitlab_urls:
-  api: https://oaklab.hu/api/v4
+  api: https://oaklab.hu/api/v4/
   download: https://oaklab.hu
   use_package_registry: true
   use_job_token: true
@@ -32,6 +32,9 @@ archives:
       - binary
     files:
       - none*
+
+checksum:
+  name_template: checksums.txt
 
 changelog:
   sort: asc

@@ -19,13 +19,14 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -47,6 +48,7 @@ import (
 	"oaklab.hu/debian/aptify/internal/sha256sum"
 	"oaklab.hu/debian/aptify/internal/util"
 	"oaklab.hu/debian/deb822"
+	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
 	"oaklab.hu/debian/deb822/types/list"
@@ -700,45 +702,14 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 }
 
 func writeContentsIndice(repoDir, componentDir string, newPackages []types.Package, arch string) error {
-	f, err := os.OpenFile(filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch)), os.O_CREATE|os.O_RDWR, 0666)
+	contentsPath := filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
+
+	// Paths shipped by each qualified package name, seeded with whatever the
+	// existing indice holds for the packages we are not rewriting.
+	packageFiles, err := readContentsIndice(contentsPath)
 	if err != nil {
-		return fmt.Errorf("failed to open Contents file: %w", err)
+		return err
 	}
-	defer f.Close()
-
-	packageFiles := make(map[string][]string)
-
-	if r, err := uncompr.NewReader(f); err == nil {
-		defer r.Close()
-
-		// Read r into contents with fmt.Fscanf
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, " ", 2)
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid Contents line: %s", line)
-			}
-			path := parts[0]
-			packageNames := strings.Split(parts[1], ",")
-			for _, pkg := range packageNames {
-				if !slices.Contains(packageFiles[pkg], path) {
-					packageFiles[pkg] = append(packageFiles[pkg], path)
-				}
-			}
-		}
-	} else if err != io.EOF {
-		return fmt.Errorf("failed to create decompression reader: %w", err)
-	}
-
-	w, err := uncompr.NewWriter(f, f.Name())
-	if err != nil {
-		return fmt.Errorf("failed to create compression writer: %w", err)
-	}
-	defer w.Close()
 
 	slog.Info("Collecting package contents", slog.String("dir", componentDir))
 
@@ -748,15 +719,11 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 			return fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
 		}
 
-		for k := range packageFiles {
-			parts := strings.SplitN(k, "/", 2)
-			slices.Reverse(parts)
-			name := parts[0]
-
-			if name == pkg.Name {
-				delete(packageFiles, k)
-			}
-		}
+		// Drop the package's previous entries, whatever section it was filed
+		// under back then.
+		maps.DeleteFunc(packageFiles, func(qualifiedName string, _ []string) bool {
+			return contents.ParseQualifiedName(qualifiedName).Name == pkg.Name
+		})
 
 		qualifiedPackageName := pkg.Name
 		if pkg.Section != "" {
@@ -766,34 +733,94 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 		packageFiles[qualifiedPackageName] = pkgContents
 	}
 
-	contents := make(map[string][]string)
+	// Invert into the layout of the file itself: one line per path, naming
+	// every package that ships it.
+	pathPackages := make(map[string][]string)
 	for pkg, paths := range packageFiles {
 		for _, path := range paths {
-			if !slices.Contains(contents[path], pkg) {
-				contents[path] = append(contents[path], pkg)
+			if !slices.Contains(pathPackages[path], pkg) {
+				pathPackages[path] = append(pathPackages[path], pkg)
 			}
 		}
 	}
 
-	paths := make([]string, 0, len(contents))
-	for k := range contents {
-		paths = append(paths, k)
-	}
-
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(pathPackages))
 
 	slog.Info("Writing Contents indice",
 		slog.String("dir", componentDir), slog.Int("count", len(paths)))
 
-	f.Truncate(0)
-	f.Seek(0, io.SeekStart)
+	f, err := os.Create(contentsPath)
+	if err != nil {
+		return fmt.Errorf("failed to create Contents file: %w", err)
+	}
+	defer f.Close()
+
+	w, err := uncompr.NewWriter(f, f.Name())
+	if err != nil {
+		return fmt.Errorf("failed to create compression writer: %w", err)
+	}
+	defer w.Close()
+
+	cw := contents.NewWriter(w)
 	for _, path := range paths {
-		if _, err := fmt.Fprintf(w, "%s %s\n", path, strings.Join(contents[path], ",")); err != nil {
+		packages := pathPackages[path]
+		sort.Strings(packages)
+
+		if err := cw.Write(contents.Entry{Path: path, Packages: packages}); err != nil {
 			return fmt.Errorf("failed to write contents: %w", err)
 		}
 	}
 
+	// Flush the compressor before the deferred close, so a failed flush is
+	// reported rather than silently truncating the indice.
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("failed to close compression writer: %w", err)
+	}
+
 	return nil
+}
+
+// readContentsIndice reads an existing Contents indice into the set of paths
+// shipped by each qualified package name. A missing indice is not an error.
+func readContentsIndice(contentsPath string) (map[string][]string, error) {
+	packageFiles := make(map[string][]string)
+
+	f, err := os.Open(contentsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return packageFiles, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to open Contents file: %w", err)
+	}
+	defer f.Close()
+
+	r, err := uncompr.NewReader(f)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			// A previous run left an empty file behind.
+			return packageFiles, nil
+		}
+
+		return nil, fmt.Errorf("failed to create decompression reader: %w", err)
+	}
+	defer r.Close()
+
+	cr := contents.NewReader(r)
+	for {
+		entry, err := cr.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("failed to read Contents file: %w", err)
+		}
+
+		for _, pkg := range entry.Packages {
+			if !slices.Contains(packageFiles[pkg], entry.Path) {
+				packageFiles[pkg] = append(packageFiles[pkg], entry.Path)
+			}
+		}
+	}
+
+	return packageFiles, nil
 }
 
 func readReleaseFile(releaseDir string, privateKey *openpgp.Entity) (*types.Release, error) {

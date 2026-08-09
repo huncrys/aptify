@@ -38,5 +38,5 @@ golang.org/x/sys v0.43.0 h1:Rlag2XtaFTxp19wS8MXlJwTvoh8ArU6ezoyFsMyCTNI=
 golang.org/x/sys v0.43.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
-oaklab.hu/debian/deb822 v0.7.0 h1:A/+3YQNGA5RmJTOFDU1Yt8aEoHsm2EqFYkP1rqukWtw=
-oaklab.hu/debian/deb822 v0.7.0/go.mod h1:zgDulcPek7ZSYXmGVzsst90ZXU6YhEgWCJAzhuJpWJ4=
+oaklab.hu/debian/deb822 v0.7.1 h1:jjYGMw4rJf6WH9gK8M0+wHTN7Te6gTrUn8X4+5slFgo=
+oaklab.hu/debian/deb822 v0.7.1/go.mod h1:it78CCGHjjm8ak+lS3F78xi7lZnbPDYPnqPhEHSW12U=

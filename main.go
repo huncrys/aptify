@@ -541,20 +541,14 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 				// Whatever the dropped `all` indices held has to be folded in
 				// here, so a migrated component is rewritten from its full
 				// package list rather than incrementally.
-				writePackages := force || migrated ||
+				writePackages := force || reread || migrated ||
 					len(newPackages) > 0 || len(removedPackages) > 0
 
 				// A repository built before the uncompressed Contents indice
 				// was published has to be rewritten even when nothing changed,
 				// otherwise apt never acquires Contents at all.
-				// TODO: Re-write contents file for removed packages
-				writeContents := force || migrated || len(newPackages) > 0 ||
+				writeContents := writePackages ||
 					!contentsIndiceComplete(componentDir, architecture)
-
-				contentsPackages := newPackages
-				if migrated {
-					contentsPackages = packages
-				}
 
 				if !writePackages && !writeContents {
 					slog.Info("Skipping index generation, no new or removed packages found",
@@ -594,7 +588,8 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					continue
 				}
 
-				if err := writeContentsIndice(repoDir, componentDir, contentsPackages, architecture); err != nil {
+				if err := writeContentsIndice(repoDir, componentDir, architecture,
+					packages, newPackages, removedPackages, reread); err != nil {
 					return fmt.Errorf("failed to write Contents file: %w", err)
 				}
 			}
@@ -827,6 +822,20 @@ func removeArchIndices(componentDir, arch string) (bool, error) {
 	return removed, nil
 }
 
+// latestPackages picks the newest version of each package name.
+func latestPackages(packages []types.Package) map[string]types.Package {
+	latest := make(map[string]types.Package, len(packages))
+	for _, pkg := range packages {
+		if existing, ok := latest[pkg.Name]; ok && existing.Compare(pkg) >= 0 {
+			continue
+		}
+
+		latest[pkg.Name] = pkg
+	}
+
+	return latest
+}
+
 // contentsIndiceComplete reports whether every published variant of the
 // Contents indice for an architecture is already on disk.
 func contentsIndiceComplete(componentDir, arch string) bool {
@@ -850,10 +859,12 @@ func contentsIndiceNames(arch string) []string {
 	}
 }
 
-// writeContentsIndice rewrites the Contents indice for an architecture. Only
-// the given packages are read back from the pool; every other package keeps the
-// paths the existing indice recorded for it.
-func writeContentsIndice(repoDir, componentDir string, rereadPackages []types.Package, arch string) error {
+// writeContentsIndice rewrites the Contents indice for an architecture.
+// packages is everything the architecture publishes, newPackages and
+// removedPackages what this build added and dropped; reread forces every
+// package to be read back from the pool rather than only those whose published
+// contents can have changed.
+func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackages, removedPackages []types.Package, reread bool) error {
 	contentsPath := filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
 
 	// Paths shipped by each qualified package name, seeded with whatever the
@@ -863,9 +874,46 @@ func writeContentsIndice(repoDir, componentDir string, rereadPackages []types.Pa
 		return err
 	}
 
+	// Contents has no version column, so a name can be described only once.
+	// Describe the version a client would install: the newest one published
+	// for this architecture, architecture `all` packages included.
+	published := latestPackages(packages)
+
+	// Drop whatever the indice still holds for names the architecture no
+	// longer publishes at all.
+	maps.DeleteFunc(packageFiles, func(qualifiedName string, _ []string) bool {
+		_, ok := published[contents.ParseQualifiedName(qualifiedName).Name]
+		return !ok
+	})
+
+	described := make(map[string]bool, len(packageFiles))
+	for qualifiedName := range packageFiles {
+		described[contents.ParseQualifiedName(qualifiedName).Name] = true
+	}
+
+	latestNew := latestPackages(newPackages)
+	latestRemoved := latestPackages(removedPackages)
+
 	slog.Info("Collecting package contents", slog.String("dir", componentDir))
 
-	for _, pkg := range rereadPackages {
+	for _, name := range slices.Sorted(maps.Keys(published)) {
+		pkg := published[name]
+
+		// The indice describes whichever version was newest last time, so it
+		// only goes stale when this build published a newer version or
+		// removed the very one it described.
+		stale := reread || !described[name]
+		if added, ok := latestNew[name]; ok && added.Compare(pkg) == 0 {
+			stale = true
+		}
+		if dropped, ok := latestRemoved[name]; ok && dropped.Compare(pkg) > 0 {
+			stale = true
+		}
+
+		if !stale {
+			continue
+		}
+
 		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
 		if err != nil {
 			return fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
@@ -874,7 +922,7 @@ func writeContentsIndice(repoDir, componentDir string, rereadPackages []types.Pa
 		// Drop the package's previous entries, whatever section it was filed
 		// under back then.
 		maps.DeleteFunc(packageFiles, func(qualifiedName string, _ []string) bool {
-			return contents.ParseQualifiedName(qualifiedName).Name == pkg.Name
+			return contents.ParseQualifiedName(qualifiedName).Name == name
 		})
 
 		qualifiedPackageName := pkg.Name

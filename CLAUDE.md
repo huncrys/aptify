@@ -76,9 +76,10 @@ The build is a single pass over the config with these stages, in order:
    *not* published as an architecture of its own - Ubuntu's layout, not Debian's, which
    publishes `binary-all` on top of the fold. The exception is a component that has no
    other architecture, which would otherwise get no indices at all. `removeArchIndices`
-   deletes the `binary-all` and `Contents-all*` an older version left behind, and the
-   component is then rewritten from its full package list rather than incrementally, so
-   nothing that only lived in those indices is lost.
+   deletes the `binary-all` and `Contents-all*` an older version left behind; `Packages`
+   is then rewritten from the component's full package list, and `Contents` picks the
+   folded-in names up because it re-reads any name the existing indice does not describe,
+   so nothing that only lived in those indices is lost.
 5. **Garbage-collect the pool.** `poolCandidates` collects every pool path seen while
    loading and ingesting; `poolReferences` is then counted from the *final* package
    lists, and a candidate nobody references is deleted. Counting incrementally as
@@ -91,14 +92,26 @@ The build is a single pass over the config with these stages, in order:
 
 ### Incrementality
 
-This is the subtlety most changes have to respect. The `Packages` indices are skipped
-when a release/component/arch has no new and no removed packages, unless `--force`. The
-`Contents` indice is additionally skipped when there are no *new* packages, which is a
-known gap: removals do not currently rewrite `Contents` (see the TODO in the arch loop).
-It is rewritten anyway when `contentsIndiceComplete` finds a variant missing, so a
-repository published before both variants were written heals itself on the next build.
-`Contents` is rebuilt by reading the existing indice, dropping each new package's
-previous entries by qualified name, then inverting path -> packages.
+This is the subtlety most changes have to respect. Both indices are skipped when a
+release/component/arch has no new and no removed packages, unless `--force` or
+`--reread`. `Contents` is rewritten anyway when `contentsIndiceComplete` finds a variant
+missing, so a repository published before both variants were written heals itself on the
+next build.
+
+`Contents` has no version column, so it can only describe one version per name:
+`latestPackages` picks the newest one published for the architecture (architecture `all`
+folded in), which is the version a client would install. Rebuilding starts from the
+existing indice, drops the names the architecture no longer publishes at all, and then
+re-reads from the pool only the names whose winner can have changed - the winner is new,
+or the build removed a version that outranks it, or the indice does not describe the
+name yet. Everything else keeps the paths already recorded, so a build does not re-open
+every `.deb`. `--reread` re-reads them all. Entries are dropped by qualified name, so a
+package that changed section does not leave a second entry behind; the map is then
+inverted path -> packages to write the file.
+
+The consequence worth remembering: adding an *older* version of a package must not
+change `Contents`, and pruning the version it described must. Judging by "which packages
+did this build touch" gets both wrong, which is what the winner comparison replaced.
 
 `writeReleaseFile` decodes the existing `InRelease` (verifying against the signing key)
 and compares every metadata field; it rewrites only when something changed or an index

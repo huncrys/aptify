@@ -59,7 +59,12 @@ The build is a single pass over the config with these stages, in order:
    matching SHA256 is skipped; a mismatch logs a warning and overwrites. `prefix` is the
    first letter of the source name, or `lib?` for `lib*` - standard Debian pool layout.
 3. **Prune.** `max_versions` per component drops the oldest versions (sorted by
-   `types.Package.Compare`) into a removed set.
+   `types.Package.Compare`) into a removed set. `surplusVersions` judges a package the
+   way a client sees it: because architecture `all` packages are folded into every
+   architecture's index, they compete with each architecture's own versions, and one is
+   dropped only when it is surplus for *every* architecture publishing it. Keeping an
+   `all` version another architecture still needs can leave one architecture above
+   `max_versions` - there is a single entry to keep or drop, not one per architecture.
 4. **Write indices.** Per release/component/architecture: `Packages`, `Packages.gz`,
    `Packages.xz`, and both `Contents-<arch>` and `Contents-<arch>.gz`. Every index has to
    be published under its uncompressed name too: apt resolves a target by the uncompressed
@@ -74,10 +79,13 @@ The build is a single pass over the config with these stages, in order:
    deletes the `binary-all` and `Contents-all*` an older version left behind, and the
    component is then rewritten from its full package list rather than incrementally, so
    nothing that only lived in those indices is lost.
-5. **Garbage-collect the pool.** `poolReferences` counts how many index entries point at
-   each pool path across all releases; files reaching zero are deleted. A `.deb` shared
-   by several components is copied once and reference-counted, so any change to how
-   packages are added or removed must keep this counter balanced.
+5. **Garbage-collect the pool.** `poolCandidates` collects every pool path seen while
+   loading and ingesting; `poolReferences` is then counted from the *final* package
+   lists, and a candidate nobody references is deleted. Counting incrementally as
+   packages are read and pruned is what used to leak: a package listed once per
+   architecture was counted several times but removed once, so its `.deb` stayed
+   referenced forever. A `.deb` shared by several components is copied once and counted
+   once per component, so it survives as long as any component still lists it.
 6. **Changelogs** (only when `changelogs: true` *and* `url` is set - `HasChangelogs()`),
    then `signing_key.asc`.
 

@@ -233,6 +233,10 @@ func main() {
 	}
 }
 
+// archAll is the architecture whose packages belong in every architecture's
+// indices rather than in one of its own.
+var archAll = new(arch.MustParse("all"))
+
 func buildRepository(repoDir, confPath, privateKeyPath string, force, reread bool) error {
 	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
@@ -254,13 +258,12 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 		return fmt.Errorf("failed to read config: %w", err)
 	}
 
-	archAll := new(arch.MustParse("all"))
 	packagesForReleaseComponent := make(map[string][]types.Package)
 	newPackagesForReleaseComponent := make(map[string][]types.Package)
 	removedPackagesForReleaseComponent := make(map[string][]types.Package)
 	archsForReleaseComponent := make(map[string]map[string]bool)
 	pkgPoolPaths := make(map[string]string)
-	poolReferences := make(map[string]int)
+	poolCandidates := make(map[string]bool)
 
 	// Load existing repository directory
 	if dir, err := os.Stat(repoDir); err == nil && dir.IsDir() {
@@ -297,7 +300,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 
 				// Get the architectures from the Packages file.
 				for _, pkg := range packages {
-					poolReferences[pkg.Filename]++
+					poolCandidates[pkg.Filename] = true
 					archsForReleaseComponent[releaseComponent][pkg.Architecture.String()] = true
 				}
 			}
@@ -406,7 +409,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					} else {
 						pkg.Filename = existingPoolPath
 					}
-					poolReferences[pkg.Filename]++
+					poolCandidates[pkg.Filename] = true
 
 					// Get the size of the package file.
 					fi, err := os.Stat(filepath.Join(repoDir, pkg.Filename))
@@ -429,36 +432,25 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 			}
 
 			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
-			versions := make(map[string][]types.Package)
-			for _, pkg := range packagesForReleaseComponent[releaseComponent] {
-				// Use the package name and architecture as the key.
-				key := fmt.Sprintf("%s/%s", pkg.Name, pkg.Architecture.String())
 
-				if !slices.ContainsFunc(versions[key], func(existingPkg types.Package) bool {
+			// The versions of every package, by name and then architecture.
+			versions := make(map[string]map[string][]types.Package)
+			for _, pkg := range packagesForReleaseComponent[releaseComponent] {
+				architecture := pkg.Architecture.String()
+
+				if versions[pkg.Name] == nil {
+					versions[pkg.Name] = make(map[string][]types.Package)
+				}
+
+				if !slices.ContainsFunc(versions[pkg.Name][architecture], func(existingPkg types.Package) bool {
 					return pkg.Compare(existingPkg) == 0
 				}) {
-					versions[key] = append(versions[key], pkg)
+					versions[pkg.Name][architecture] = append(versions[pkg.Name][architecture], pkg)
 				}
 			}
 
-			for _, pkgs := range versions {
-				countMustRemove := max(len(pkgs)-int(componentConf.MaxVersions), 0)
-				if countMustRemove == 0 {
-					slog.Debug("No versions to remove for package",
-						slog.String("package", pkgs[0].Name),
-						slog.String("architecture", pkgs[0].Architecture.String()),
-						slog.String("release_component", releaseComponent),
-						slog.Int("max_versions", int(componentConf.MaxVersions)),
-						slog.Int("current_versions", len(pkgs)),
-					)
-				}
-
-				// Sort the packages by version.
-				slices.SortStableFunc(pkgs, func(a, b types.Package) int {
-					return a.Compare(b)
-				})
-
-				for _, pkgToRemove := range pkgs[:countMustRemove] {
+			for _, name := range slices.Sorted(maps.Keys(versions)) {
+				for _, pkgToRemove := range surplusVersions(versions[name], int(componentConf.MaxVersions)) {
 					slog.Info("Removing old package version",
 						slog.String("name", pkgToRemove.Name),
 						slog.String("architecture", pkgToRemove.Architecture.String()),
@@ -473,7 +465,6 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					newPackagesForReleaseComponent[releaseComponent] = slices.DeleteFunc(newPackagesForReleaseComponent[releaseComponent], comparator)
 
 					removedPackagesForReleaseComponent[releaseComponent] = append(removedPackagesForReleaseComponent[releaseComponent], pkgToRemove)
-					poolReferences[pkgToRemove.Filename]--
 				}
 			}
 		}
@@ -620,8 +611,20 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 		}
 	}
 
-	for poolPath, references := range poolReferences {
-		if references > 0 {
+	// Count the pool paths the indices ended up referencing. Counting as
+	// packages are read and prune, rather than from the result, miscounts every
+	// package that is listed more than once per component - an architecture
+	// `all` package is in every architecture's indice, so removing it once left
+	// its file behind as permanently referenced.
+	poolReferences := make(map[string]int)
+	for _, packages := range packagesForReleaseComponent {
+		for _, pkg := range packages {
+			poolReferences[pkg.Filename]++
+		}
+	}
+
+	for poolPath := range poolCandidates {
+		if poolReferences[poolPath] > 0 {
 			continue
 		}
 
@@ -731,6 +734,69 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 	}
 
 	return nil
+}
+
+// surplusVersions returns the versions of one package that fall outside
+// maxVersions, given its versions by architecture. Architecture `all` packages
+// are folded into every architecture's indices, so they are judged as a client
+// sees them: they compete with each architecture's own versions, and one is
+// only surplus once it is surplus for every architecture that publishes it.
+// Keeping it for one architecture can leave another over maxVersions, which is
+// the honest outcome - there is a single entry to keep or drop, not one per
+// architecture.
+func surplusVersions(versionsForArch map[string][]types.Package, maxVersions int) []types.Package {
+	architectures := slices.Sorted(maps.Keys(versionsForArch))
+
+	// With nothing to fold them into, `all` packages are published as an
+	// architecture of their own and compete only with each other.
+	if len(architectures) > 1 {
+		architectures = slices.DeleteFunc(architectures, func(architecture string) bool {
+			return architecture == archAll.String()
+		})
+	}
+
+	// How many architectures each version is published for, and in how many of
+	// them it is surplus.
+	published := make(map[string]int)
+	surplus := make(map[string]int)
+
+	var candidates []types.Package
+
+	for _, architecture := range architectures {
+		versions := slices.Clone(versionsForArch[architecture])
+		if architecture != archAll.String() {
+			versions = append(versions, versionsForArch[archAll.String()]...)
+		}
+
+		slices.SortStableFunc(versions, func(a, b types.Package) int {
+			return a.Compare(b)
+		})
+
+		countMustRemove := max(len(versions)-maxVersions, 0)
+
+		for i, pkg := range versions {
+			key := pkg.Version.String() + "/" + pkg.Architecture.String()
+
+			if published[key] == 0 {
+				candidates = append(candidates, pkg)
+			}
+			published[key]++
+
+			if i < countMustRemove {
+				surplus[key]++
+			}
+		}
+	}
+
+	var removals []types.Package
+	for _, pkg := range candidates {
+		key := pkg.Version.String() + "/" + pkg.Architecture.String()
+		if surplus[key] == published[key] {
+			removals = append(removals, pkg)
+		}
+	}
+
+	return removals
 }
 
 // removeArchIndices deletes every indice published for an architecture,

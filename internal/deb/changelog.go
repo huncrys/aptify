@@ -19,26 +19,22 @@
 package deb
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/dpeckett/archivefs/arfs"
-	"github.com/dpeckett/archivefs/tarfs"
-	"github.com/dpeckett/uncompr"
+	"github.com/mholt/archives"
+	_ "oaklab.hu/debian/aptify/internal/archivesext"
 )
 
 func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to open package file: %w", err)
-	}
-	defer f.Close()
-
-	debFS, err := arfs.Open(f)
+	debFS, err := archives.FileSystem(context.TODO(), path, nil)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("failed to open archive: %w", err)
 	}
@@ -48,7 +44,7 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 	}
 
 	// Look for data archive in the debian package.
-	entries, err := debFS.ReadDir(".")
+	entries, err := fs.ReadDir(debFS, ".")
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("failed to read debian package: %w", err)
 	}
@@ -70,21 +66,16 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 	}
 	defer dataArchiveFile.Close()
 
-	dataArchiveReader, err := uncompr.NewReader(dataArchiveFile)
-	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to decompress data archive: %w", err)
-	}
-	defer dataArchiveReader.Close()
-
 	// Write data archive to temporary file (as we need a seekable reader for the
 	// tarfs implementation).
-	tempFile, err := os.CreateTemp("", "data.tar")
+	tempFile, err := os.CreateTemp("", dataArchiveFilename)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("failed to create temporary file: %w", err)
 	}
+	defer tempFile.Close()
 	defer os.Remove(tempFile.Name())
 
-	if _, err := io.Copy(tempFile, dataArchiveReader); err != nil {
+	if _, err := io.Copy(tempFile, dataArchiveFile); err != nil {
 		return nil, time.Time{}, fmt.Errorf("failed to write data archive to temporary file: %w", err)
 	}
 
@@ -93,7 +84,7 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 		return nil, time.Time{}, fmt.Errorf("failed to seek to beginning of temporary file: %w", err)
 	}
 
-	dataArchiveFS, err := tarfs.Open(tempFile)
+	dataArchiveFS, err := archives.FileSystem(context.TODO(), dataArchiveFilename, tempFile)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("failed to open data archive: %w", err)
 	}
@@ -121,22 +112,35 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 			return nil, time.Time{}, fmt.Errorf("failed to stat changelog file: %w", err)
 		}
 		defer changelogFile.Close()
-		changelogReader, err := uncompr.NewReader(changelogFile)
-		if err != nil {
-			return nil, time.Time{}, fmt.Errorf("failed to decompress changelog file: %w", err)
-		}
-		defer changelogReader.Close()
-		changelogData, err := io.ReadAll(changelogReader)
+		changelogData, err := io.ReadAll(changelogFile)
 		if err != nil {
 			return nil, time.Time{}, fmt.Errorf("failed to read changelog file: %w", err)
 		}
+
+		format, stream, err := archives.Identify(context.TODO(), candidate, bytes.NewReader(changelogData))
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("failed to identify changelog file format: %w", err)
+		}
+
+		if decomp, ok := format.(archives.Decompressor); ok {
+			decompStream, err := decomp.OpenReader(stream)
+			if err != nil {
+				return nil, time.Time{}, fmt.Errorf("failed to decompress changelog file: %w", err)
+			}
+			defer decompStream.Close()
+			changelogData, err = io.ReadAll(decompStream)
+			if err != nil {
+				return nil, time.Time{}, fmt.Errorf("failed to read changelog file: %w", err)
+			}
+		}
+
 		if len(changelogData) > 0 {
 			return changelogData, stat.ModTime(), nil
 		}
 	}
 
 	modTime := time.Now()
-	if stat, err := f.Stat(); err == nil {
+	if stat, err := os.Stat(path); err == nil {
 		modTime = stat.ModTime()
 	}
 

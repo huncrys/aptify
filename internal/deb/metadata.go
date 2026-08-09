@@ -20,27 +20,21 @@ package deb
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"strings"
 
-	"github.com/dpeckett/archivefs/arfs"
-	"github.com/dpeckett/archivefs/tarfs"
-	"github.com/dpeckett/uncompr"
+	"github.com/goforj/godump"
+	"github.com/mholt/archives"
+	_ "oaklab.hu/debian/aptify/internal/archivesext"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/types"
 )
 
-func GetMetadata(path string) (*types.Package, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open package file: %w", err)
-	}
-	defer f.Close()
-
-	debFS, err := arfs.Open(f)
+func GetMetadata(ctx context.Context, path string) (*types.Package, error) {
+	debFS, err := archives.FileSystem(ctx, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open archive: %w", err)
 	}
@@ -50,7 +44,7 @@ func GetMetadata(path string) (*types.Package, error) {
 	}
 
 	// Look for control archive in the debian package.
-	entries, err := debFS.ReadDir(".")
+	entries, err := fs.ReadDir(debFS, ".")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read debian package: %w", err)
 	}
@@ -71,19 +65,17 @@ func GetMetadata(path string) (*types.Package, error) {
 		return nil, fmt.Errorf("failed to open control archive: %w", err)
 	}
 
-	controlArchiveReader, err := uncompr.NewReader(controlArchiveFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress control archive: %w", err)
-	}
-
 	// Read control archive entirely into memory (as we need a seekable reader for
 	// the tarfs implementation).
-	controlArchiveData, err := io.ReadAll(controlArchiveReader)
+	controlArchiveData, err := io.ReadAll(controlArchiveFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read control archive: %w", err)
 	}
 
-	controlArchiveFS, err := tarfs.Open(bytes.NewReader(controlArchiveData))
+	godump.Dump(len(controlArchiveData))
+	lol := bytes.NewReader(controlArchiveData)
+
+	controlArchiveFS, err := archives.FileSystem(ctx, controlArchiveFilename, lol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open control archive: %w", err)
 	}

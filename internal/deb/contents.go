@@ -19,25 +19,19 @@
 package deb
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"strings"
 
-	"github.com/dpeckett/archivefs/arfs"
-	"github.com/dpeckett/archivefs/tarfs"
-	"github.com/dpeckett/uncompr"
+	"github.com/mholt/archives"
+	_ "oaklab.hu/debian/aptify/internal/archivesext"
 )
 
 func GetPackageContents(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open package file: %w", err)
-	}
-	defer f.Close()
-
-	debFS, err := arfs.Open(f)
+	debFS, err := archives.FileSystem(context.TODO(), path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open archive: %w", err)
 	}
@@ -47,7 +41,7 @@ func GetPackageContents(path string) ([]string, error) {
 	}
 
 	// Look for data archive in the debian package.
-	entries, err := debFS.ReadDir(".")
+	entries, err := fs.ReadDir(debFS, ".")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read debian package: %w", err)
 	}
@@ -68,20 +62,16 @@ func GetPackageContents(path string) ([]string, error) {
 		return nil, fmt.Errorf("failed to open data archive: %w", err)
 	}
 
-	dataArchiveReader, err := uncompr.NewReader(dataArchiveFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress data archive: %w", err)
-	}
-
 	// Write data archive to temporary file (as we need a seekable reader for the
 	// tarfs implementation).
-	tempFile, err := os.CreateTemp("", "data.tar")
+	tempFile, err := os.CreateTemp("", dataArchiveFilename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary file: %w", err)
 	}
+	defer tempFile.Close()
 	defer os.Remove(tempFile.Name())
 
-	if _, err := io.Copy(tempFile, dataArchiveReader); err != nil {
+	if _, err := io.Copy(tempFile, dataArchiveFile); err != nil {
 		return nil, fmt.Errorf("failed to write data archive to temporary file: %w", err)
 	}
 
@@ -90,7 +80,7 @@ func GetPackageContents(path string) ([]string, error) {
 		return nil, fmt.Errorf("failed to seek to beginning of temporary file: %w", err)
 	}
 
-	dataArchiveFS, err := tarfs.Open(tempFile)
+	dataArchiveFS, err := archives.FileSystem(context.TODO(), dataArchiveFilename, tempFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open data archive: %w", err)
 	}

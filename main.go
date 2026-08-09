@@ -21,6 +21,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -179,6 +180,7 @@ func main() {
 					privateKeyPath := filepath.Join(c.String("config-dir"), "aptify_private.asc")
 
 					return buildRepository(
+						c.Context,
 						repoDir,
 						c.String("config"),
 						privateKeyPath,
@@ -212,7 +214,7 @@ func main() {
 	}
 }
 
-func buildRepository(repoDir, confPath, privateKeyPath string) error {
+func buildRepository(ctx context.Context, repoDir, confPath, privateKeyPath string) error {
 	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
 	}
@@ -294,7 +296,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string) error {
 				}
 
 				for _, pkgPath := range matches {
-					pkg, err := deb.GetMetadata(pkgPath)
+					pkg, err := deb.GetMetadata(ctx, pkgPath)
 					if err != nil {
 						return fmt.Errorf("failed to get package metadata: %w", err)
 					}

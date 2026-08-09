@@ -61,8 +61,19 @@ The build is a single pass over the config with these stages, in order:
 3. **Prune.** `max_versions` per component drops the oldest versions (sorted by
    `types.Package.Compare`) into a removed set.
 4. **Write indices.** Per release/component/architecture: `Packages`, `Packages.gz`,
-   `Packages.xz`, and `Contents-<arch>.gz`. Architecture `all` packages are folded into
-   every architecture's index.
+   `Packages.xz`, and both `Contents-<arch>` and `Contents-<arch>.gz`. Every index has to
+   be published under its uncompressed name too: apt resolves a target by the uncompressed
+   key in the Release file and only then picks a compressed variant to fetch, so an index
+   listed only as `.gz` is silently never acquired (this is what kept `apt-file` from
+   seeing `Contents`).
+
+   Architecture `all` packages are folded into every architecture's index and `all` is
+   *not* published as an architecture of its own - Ubuntu's layout, not Debian's, which
+   publishes `binary-all` on top of the fold. The exception is a component that has no
+   other architecture, which would otherwise get no indices at all. `removeArchIndices`
+   deletes the `binary-all` and `Contents-all*` an older version left behind, and the
+   component is then rewritten from its full package list rather than incrementally, so
+   nothing that only lived in those indices is lost.
 5. **Garbage-collect the pool.** `poolReferences` counts how many index entries point at
    each pool path across all releases; files reaching zero are deleted. A `.deb` shared
    by several components is copied once and reference-counted, so any change to how
@@ -72,12 +83,14 @@ The build is a single pass over the config with these stages, in order:
 
 ### Incrementality
 
-This is the subtlety most changes have to respect. Index generation is skipped when a
-release/component/arch has no new and no removed packages, unless `--force`. The
+This is the subtlety most changes have to respect. The `Packages` indices are skipped
+when a release/component/arch has no new and no removed packages, unless `--force`. The
 `Contents` indice is additionally skipped when there are no *new* packages, which is a
-known gap: removals do not currently rewrite `Contents` (see the TODO in
-`writeContentsIndice`). `Contents` is rebuilt by reading the existing indice, dropping
-each new package's previous entries by qualified name, then inverting path -> packages.
+known gap: removals do not currently rewrite `Contents` (see the TODO in the arch loop).
+It is rewritten anyway when `contentsIndiceComplete` finds a variant missing, so a
+repository published before both variants were written heals itself on the next build.
+`Contents` is rebuilt by reading the existing indice, dropping each new package's
+previous entries by qualified name, then inverting path -> packages.
 
 `writeReleaseFile` decodes the existing `InRelease` (verifying against the signing key)
 and compares every metadata field; it rewrites only when something changed or an index

@@ -487,11 +487,30 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 
 		for _, componentConf := range releaseConf.Components {
 			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
+			componentDir := filepath.Join(repoDir, "dists", releaseConf.Name, componentConf.Name)
 
-			for architecture := range archsForReleaseComponent[releaseComponent] {
+			// Architecture `all` packages go into every architecture's indices,
+			// so a separate `all` architecture only duplicates them. Earlier
+			// versions published one, and apt keeps fetching it for as long as
+			// the release advertises the architecture, so drop it here. It is
+			// kept when there is nothing to fold it into, as the component
+			// would otherwise have no indices at all.
+			componentArchs := archsForReleaseComponent[releaseComponent]
+
+			migrated := false
+			if len(componentArchs) > 1 && componentArchs[archAll.String()] {
+				delete(componentArchs, archAll.String())
+
+				var err error
+				migrated, err = removeArchIndices(componentDir, archAll.String())
+				if err != nil {
+					return err
+				}
+			}
+
+			for architecture := range componentArchs {
 				architectures = append(architectures, arch.MustParse(architecture))
 
-				componentDir := filepath.Join(repoDir, "dists", releaseConf.Name, componentConf.Name)
 				archDir := filepath.Join(componentDir, "binary-"+architecture)
 
 				if err := os.MkdirAll(archDir, 0o755); err != nil {
@@ -528,7 +547,25 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 				}
 				removedPackages = filteredRemovedPackages
 
-				if !force && len(newPackages) == 0 && len(removedPackages) == 0 {
+				// Whatever the dropped `all` indices held has to be folded in
+				// here, so a migrated component is rewritten from its full
+				// package list rather than incrementally.
+				writePackages := force || migrated ||
+					len(newPackages) > 0 || len(removedPackages) > 0
+
+				// A repository built before the uncompressed Contents indice
+				// was published has to be rewritten even when nothing changed,
+				// otherwise apt never acquires Contents at all.
+				// TODO: Re-write contents file for removed packages
+				writeContents := force || migrated || len(newPackages) > 0 ||
+					!contentsIndiceComplete(componentDir, architecture)
+
+				contentsPackages := newPackages
+				if migrated {
+					contentsPackages = packages
+				}
+
+				if !writePackages && !writeContents {
 					slog.Info("Skipping index generation, no new or removed packages found",
 						slog.String("dir", archDir),
 					)
@@ -548,12 +585,17 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					return removedPackages[i].Compare(removedPackages[j]) < 0
 				})
 
-				if err := writePackagesIndice(archDir, packages); err != nil {
-					return fmt.Errorf("failed to write package lists: %w", err)
+				if writePackages {
+					if err := writePackagesIndice(archDir, packages); err != nil {
+						return fmt.Errorf("failed to write package lists: %w", err)
+					}
+				} else {
+					slog.Info("Skipping Packages indice generation, no new or removed packages found",
+						slog.String("dir", archDir),
+					)
 				}
 
-				// TODO: Re-write contents file for removed packages
-				if !force && len(newPackages) == 0 {
+				if !writeContents {
 					slog.Info("Skipping Contents file generation, no new packages found",
 						slog.String("dir", archDir),
 					)
@@ -561,7 +603,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					continue
 				}
 
-				if err := writeContentsIndice(repoDir, componentDir, newPackages, architecture); err != nil {
+				if err := writeContentsIndice(repoDir, componentDir, contentsPackages, architecture); err != nil {
 					return fmt.Errorf("failed to write Contents file: %w", err)
 				}
 			}
@@ -683,19 +725,7 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 	}
 
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
-		f, err := os.Create(filepath.Join(archDir, name))
-		if err != nil {
-			return fmt.Errorf("failed to create Packages file: %w", err)
-		}
-		defer f.Close()
-
-		w, err := uncompr.NewWriter(f, f.Name())
-		if err != nil {
-			return fmt.Errorf("failed to create compression writer: %w", err)
-		}
-		defer w.Close()
-
-		if _, err := w.Write(packageList.Bytes()); err != nil {
+		if err := writeIndiceFile(filepath.Join(archDir, name), packageList.Bytes()); err != nil {
 			return fmt.Errorf("failed to write Packages file: %w", err)
 		}
 	}
@@ -703,7 +733,61 @@ func writePackagesIndice(archDir string, packages []types.Package) error {
 	return nil
 }
 
-func writeContentsIndice(repoDir, componentDir string, newPackages []types.Package, arch string) error {
+// removeArchIndices deletes every indice published for an architecture,
+// reporting whether there was anything left to delete.
+func removeArchIndices(componentDir, arch string) (bool, error) {
+	paths := []string{filepath.Join(componentDir, "binary-"+arch)}
+	for _, name := range contentsIndiceNames(arch) {
+		paths = append(paths, filepath.Join(componentDir, name))
+	}
+
+	var removed bool
+	for _, path := range paths {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return removed, fmt.Errorf("failed to stat stale indice: %w", err)
+		}
+
+		slog.Info("Removing stale indice", slog.String("path", path))
+
+		if err := os.RemoveAll(path); err != nil {
+			return removed, fmt.Errorf("failed to remove stale indice: %w", err)
+		}
+
+		removed = true
+	}
+
+	return removed, nil
+}
+
+// contentsIndiceComplete reports whether every published variant of the
+// Contents indice for an architecture is already on disk.
+func contentsIndiceComplete(componentDir, arch string) bool {
+	for _, name := range contentsIndiceNames(arch) {
+		if _, err := os.Stat(filepath.Join(componentDir, name)); err != nil {
+			return false
+		}
+	}
+
+	return true
+}
+
+// contentsIndiceNames returns the file names the Contents indice for an
+// architecture is published under. apt resolves the indice by its uncompressed
+// name in the Release file and only then picks a compressed variant to fetch,
+// so an indice listed as Contents-<arch>.gz alone is never acquired.
+func contentsIndiceNames(arch string) []string {
+	return []string{
+		fmt.Sprintf("Contents-%s", arch),
+		fmt.Sprintf("Contents-%s.gz", arch),
+	}
+}
+
+// writeContentsIndice rewrites the Contents indice for an architecture. Only
+// the given packages are read back from the pool; every other package keeps the
+// paths the existing indice recorded for it.
+func writeContentsIndice(repoDir, componentDir string, rereadPackages []types.Package, arch string) error {
 	contentsPath := filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
 
 	// Paths shipped by each qualified package name, seeded with whatever the
@@ -715,7 +799,7 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 
 	slog.Info("Collecting package contents", slog.String("dir", componentDir))
 
-	for _, pkg := range newPackages {
+	for _, pkg := range rereadPackages {
 		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
 		if err != nil {
 			return fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
@@ -751,9 +835,33 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 	slog.Info("Writing Contents indice",
 		slog.String("dir", componentDir), slog.Int("count", len(paths)))
 
-	f, err := os.Create(contentsPath)
+	var contentsList bytes.Buffer
+
+	cw := contents.NewWriter(&contentsList)
+	for _, path := range paths {
+		packages := pathPackages[path]
+		sort.Strings(packages)
+
+		if err := cw.Write(contents.Entry{Path: path, Packages: packages}); err != nil {
+			return fmt.Errorf("failed to write contents: %w", err)
+		}
+	}
+
+	for _, name := range contentsIndiceNames(arch) {
+		if err := writeIndiceFile(filepath.Join(componentDir, name), contentsList.Bytes()); err != nil {
+			return fmt.Errorf("failed to write Contents file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// writeIndiceFile writes body to path, compressed according to the path's
+// extension.
+func writeIndiceFile(path string, body []byte) error {
+	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("failed to create Contents file: %w", err)
+		return fmt.Errorf("failed to create file: %w", err)
 	}
 	defer f.Close()
 
@@ -763,14 +871,8 @@ func writeContentsIndice(repoDir, componentDir string, newPackages []types.Packa
 	}
 	defer w.Close()
 
-	cw := contents.NewWriter(w)
-	for _, path := range paths {
-		packages := pathPackages[path]
-		sort.Strings(packages)
-
-		if err := cw.Write(contents.Entry{Path: path, Packages: packages}); err != nil {
-			return fmt.Errorf("failed to write contents: %w", err)
-		}
+	if _, err := w.Write(body); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
 	}
 
 	// Flush the compressor before the deferred close, so a failed flush is

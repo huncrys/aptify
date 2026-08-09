@@ -48,11 +48,13 @@ import (
 	"oaklab.hu/debian/aptify/internal/sha256sum"
 	"oaklab.hu/debian/aptify/internal/util"
 	"oaklab.hu/debian/deb822"
+	"oaklab.hu/debian/deb822/changelog"
 	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
 	"oaklab.hu/debian/deb822/types/list"
 	"oaklab.hu/debian/deb822/types/time"
+	"oaklab.hu/debian/deb822/types/version"
 )
 
 func main() {
@@ -962,7 +964,7 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 			if sourceOrName == "" {
 				sourceOrName = strings.TrimSpace(pkg.Name)
 			}
-			changelog, changelogTime, err := deb.GetPackageChangelog(sourceOrName, pkg.Name, filepath.Join(repoDir, pkg.Filename))
+			changelogData, changelogTime, err := deb.GetPackageChangelog(sourceOrName, pkg.Name, filepath.Join(repoDir, pkg.Filename))
 			if err != nil {
 				if !os.IsNotExist(err) {
 					slog.Warn("Failed to get package changelog",
@@ -981,10 +983,17 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 					slog.String("architecture", pkg.Architecture.String()),
 				)
 
-				// Create an empty changelog file if not found.
-				changelog = fmt.Appendf(nil, "%s (%s) unstable; urgency=medium\n\n  * No changelog available.\n\n -- %s  %s\n",
-					sourceOrName, pkgVer, pkg.Maintainer,
-					changelogTime.Format(stdtime.RFC1123Z))
+				changelogData, err = placeholderChangelog(sourceOrName, *pkgVer, pkg.Maintainer, changelogTime)
+				if err != nil {
+					slog.Warn("Failed to generate dummy changelog",
+						slog.String("package", pkg.Name),
+						slog.String("version", pkg.Version.String()),
+						slog.String("architecture", pkg.Architecture.String()),
+						slog.String("error", err.Error()),
+					)
+
+					continue
+				}
 			}
 
 			if err := os.MkdirAll(filepath.Dir(changelogPath), 0o755); err != nil {
@@ -997,7 +1006,7 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 			}
 			defer changelogFile.Close()
 
-			if err := os.WriteFile(changelogPath, changelog, 0o644); err != nil {
+			if err := os.WriteFile(changelogPath, changelogData, 0o644); err != nil {
 				return nil, fmt.Errorf("failed to write changelog file: %w", err)
 			}
 
@@ -1021,6 +1030,27 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 
 	slices.Sort(referencedFiles)
 	return slices.Compact(referencedFiles), nil
+}
+
+// placeholderChangelog synthesises the single entry published for a package
+// that ships no changelog of its own, so that the Changelogs URL advertised in
+// the Release file still resolves to something apt can parse.
+func placeholderChangelog(source string, pkgVer version.Version, maintainer string, date stdtime.Time) ([]byte, error) {
+	var buf bytes.Buffer
+
+	if err := changelog.NewWriter(&buf).Write(changelog.Entry{
+		Source:        source,
+		Version:       pkgVer,
+		Distributions: []string{"unstable"},
+		Urgency:       changelog.DefaultUrgency,
+		Changes:       []string{"", "  * No changelog available.", ""},
+		Maintainer:    maintainer,
+		Date:          time.Time(date),
+	}); err != nil {
+		return nil, fmt.Errorf("failed to write changelog entry: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 func poolPathForPackage(componentName string, pkg *types.Package) string {

@@ -21,13 +21,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -36,6 +39,7 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/adrg/xdg"
 	"github.com/dpeckett/uncompr"
@@ -45,13 +49,15 @@ import (
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/constants"
 	"oaklab.hu/debian/aptify/internal/deb"
-	"oaklab.hu/debian/aptify/internal/sha256sum"
+	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/util"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/changelog"
 	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
+	"oaklab.hu/debian/deb822/types/boolean"
+	"oaklab.hu/debian/deb822/types/filehash"
 	"oaklab.hu/debian/deb822/types/list"
 	"oaklab.hu/debian/deb822/types/time"
 	"oaklab.hu/debian/deb822/types/version"
@@ -237,6 +243,13 @@ func main() {
 // indices rather than in one of its own.
 var archAll = new(arch.MustParse("all"))
 
+// releaseIndiceGlobs selects the files a Release file publishes checksums for,
+// relative to the release directory. Anything apt has to verify has to be
+// matched here or it is signed for but unlisted. The patterns are deliberately
+// narrow: `*/binary-*/*` would also match the by-hash entries, which are hard
+// links to files already listed under their own names.
+var releaseIndiceGlobs = []string{"*/binary-*/Packages*", "*/binary-*/Release", "*/Contents-*"}
+
 func buildRepository(repoDir, confPath, privateKeyPath string, force, reread bool) error {
 	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
@@ -318,6 +331,11 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 						if freshPkg, err := deb.GetMetadata(pkgPath); err != nil {
 							return fmt.Errorf("failed to reread package metadata: %w", err)
 						} else {
+							// The control file carries none of the checksums
+							// of the package file itself, so they have to be
+							// carried across rather than blanked.
+							freshPkg.MD5sum = pkg.MD5sum
+							freshPkg.SHA1 = pkg.SHA1
 							freshPkg.SHA256 = pkg.SHA256
 							freshPkg.Filename = pkg.Filename
 							freshPkg.Size = pkg.Size
@@ -348,10 +366,13 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 						return fmt.Errorf("failed to get package metadata: %w", err)
 					}
 
-					pkg.SHA256, err = sha256sum.File(pkgPath)
+					sums, err := hashsum.File(pkgPath)
 					if err != nil {
 						return fmt.Errorf("failed to hash package: %w", err)
 					}
+					pkg.MD5sum = sums.MD5
+					pkg.SHA1 = sums.SHA1
+					pkg.SHA256 = sums.SHA256
 
 					skip := false
 					if _, ok := packagesForReleaseComponent[releaseComponent]; ok {
@@ -470,6 +491,14 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 		}
 	}
 
+	// Fill in the fields older builds did not publish. This runs after the
+	// prune so no pool file about to be deleted is hashed, and after the
+	// ingest so every Filename resolves.
+	backfilled, err := backfillPackageDigests(repoDir, packagesForReleaseComponent)
+	if err != nil {
+		return fmt.Errorf("failed to backfill package digests: %w", err)
+	}
+
 	// Create release files.
 	for _, releaseConf := range conf.Releases {
 		var architectures []arch.Arch
@@ -497,6 +526,9 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 				if err != nil {
 					return err
 				}
+
+				// The release no longer publishes the indices it listed.
+				modified = modified || migrated
 			}
 
 			for architecture := range componentArchs {
@@ -507,6 +539,16 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 				if err := os.MkdirAll(archDir, 0o755); err != nil {
 					return fmt.Errorf("failed to create dists subdirectory: %w", err)
 				}
+
+				// The stub is rendered and compared on every build rather than
+				// gated on the incremental skip below, so a repository
+				// published before it existed heals itself.
+				stubWritten, err := writeComponentReleaseFile(archDir, releaseConf,
+					componentConf.Name, architecture, conf.ByHashEnabled())
+				if err != nil {
+					return fmt.Errorf("failed to write component Release file: %w", err)
+				}
+				modified = modified || stubWritten
 
 				packages := packagesForReleaseComponent[releaseComponent]
 				// Filter out packages that don't match the architecture.
@@ -542,6 +584,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 				// here, so a migrated component is rewritten from its full
 				// package list rather than incrementally.
 				writePackages := force || reread || migrated ||
+					backfilled[releaseComponent] ||
 					len(newPackages) > 0 || len(removedPackages) > 0
 
 				// A repository built before the uncompressed Contents indice
@@ -558,8 +601,6 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					continue
 				}
 
-				modified = true
-
 				sort.Slice(packages, func(i, j int) bool {
 					return packages[i].Compare(packages[j]) < 0
 				})
@@ -571,9 +612,11 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 				})
 
 				if writePackages {
-					if err := writePackagesIndice(archDir, packages); err != nil {
+					changed, err := writePackagesIndice(archDir, packages)
+					if err != nil {
 						return fmt.Errorf("failed to write package lists: %w", err)
 					}
+					modified = modified || changed
 				} else {
 					slog.Info("Skipping Packages indice generation, no new or removed packages found",
 						slog.String("dir", archDir),
@@ -588,12 +631,21 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					continue
 				}
 
-				if err := writeContentsIndice(repoDir, componentDir, architecture,
-					packages, newPackages, removedPackages, reread); err != nil {
+				changed, err := writeContentsIndice(repoDir, componentDir, architecture,
+					packages, newPackages, removedPackages, reread)
+				if err != nil {
 					return fmt.Errorf("failed to write Contents file: %w", err)
 				}
+				modified = modified || changed
 			}
 		}
+
+		// Every component contributes its own architectures, so a release with
+		// more than one component names most of them repeatedly.
+		slices.SortFunc(architectures, func(a, b arch.Arch) int {
+			return strings.Compare(a.String(), b.String())
+		})
+		architectures = slices.Compact(architectures)
 
 		releaseDir := filepath.Join(repoDir, "dists", releaseConf.Name)
 
@@ -713,22 +765,130 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 	return nil
 }
 
-func writePackagesIndice(archDir string, packages []types.Package) error {
+// writePackagesIndice writes every published variant of the Packages indice,
+// reporting whether any of them changed.
+func writePackagesIndice(archDir string, packages []types.Package) (bool, error) {
 	slog.Info("Writing Packages indice",
 		slog.String("dir", archDir), slog.Int("count", len(packages)))
 
 	var packageList bytes.Buffer
 	if err := deb822.Marshal(&packageList, packages); err != nil {
-		return fmt.Errorf("failed to marshal packages: %w", err)
+		return false, fmt.Errorf("failed to marshal packages: %w", err)
 	}
 
+	var changed bool
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
-		if err := writeIndiceFile(filepath.Join(archDir, name), packageList.Bytes()); err != nil {
-			return fmt.Errorf("failed to write Packages file: %w", err)
+		fileChanged, err := writeIndiceFile(filepath.Join(archDir, name), packageList.Bytes())
+		if err != nil {
+			return changed, fmt.Errorf("failed to write Packages file: %w", err)
+		}
+
+		changed = changed || fileChanged
+	}
+
+	return changed, nil
+}
+
+// writeComponentReleaseFile publishes the per component, per architecture
+// Release stub apt reads alongside the indices in the directory. It is
+// rendered and compared on every build rather than gated on the incremental
+// skip logic, so a repository published before the stub existed heals itself.
+func writeComponentReleaseFile(archDir string, releaseConf v1alpha1.ReleaseConfig, component, architecture string, byHash bool) (bool, error) {
+	// Archive names the suite the directory belongs to; a release that does
+	// not configure one is only ever addressed by its codename.
+	archive := releaseConf.Suite
+	if archive == "" {
+		archive = releaseConf.Name
+	}
+
+	stub := types.ComponentRelease{
+		Archive:      archive,
+		Origin:       releaseConf.Origin,
+		Label:        releaseConf.Label,
+		Version:      releaseConf.Version,
+		Component:    component,
+		Architecture: arch.MustParse(architecture),
+	}
+
+	if byHash {
+		acquireByHash := boolean.Boolean(true)
+		stub.AcquireByHash = &acquireByHash
+	}
+
+	var body bytes.Buffer
+	if err := deb822.Marshal(&body, stub); err != nil {
+		return false, fmt.Errorf("failed to marshal component release: %w", err)
+	}
+
+	path := filepath.Join(archDir, "Release")
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, body.Bytes()) {
+		return false, nil
+	}
+
+	slog.Info("Writing component Release file", slog.String("dir", archDir))
+
+	if err := writeFileAtomic(path, body.Bytes(), 0o644); err != nil {
+		return false, fmt.Errorf("failed to write component Release file: %w", err)
+	}
+
+	return true, nil
+}
+
+// backfillPackageDigests fills the fields older builds did not publish -
+// Description-md5 from the description itself, MD5sum and SHA1 by re-reading
+// the pool - and reports the release/components whose Packages indices have to
+// be rewritten as a result. The ingest keeps the stanza it already has for a
+// package whose file is unchanged, so this is the only route by which an
+// existing repository gains the fields.
+func backfillPackageDigests(repoDir string, packagesForReleaseComponent map[string][]types.Package) (map[string]bool, error) {
+	backfilled := make(map[string]bool)
+
+	// A pool file is shared by every component listing the package, so it is
+	// only ever hashed once.
+	sumsForPoolPath := make(map[string]hashsum.Sums)
+
+	for _, releaseComponent := range slices.Sorted(maps.Keys(packagesForReleaseComponent)) {
+		packages := packagesForReleaseComponent[releaseComponent]
+
+		for i := range packages {
+			pkg := &packages[i]
+
+			if descriptionMD5 := pkg.DescriptionMD5Sum(); descriptionMD5 != pkg.DescriptionMD5 {
+				pkg.DescriptionMD5 = descriptionMD5
+				backfilled[releaseComponent] = true
+			}
+
+			if pkg.MD5sum != "" && pkg.SHA1 != "" {
+				continue
+			}
+
+			sums, ok := sumsForPoolPath[pkg.Filename]
+			if !ok {
+				var err error
+				sums, err = hashsum.File(filepath.Join(repoDir, pkg.Filename))
+				if errors.Is(err, os.ErrNotExist) {
+					// A repository missing a pool file builds today, so this
+					// stays a warning: the stanza keeps the checksums it has.
+					slog.Warn("Package file missing from pool, leaving its checksums as published",
+						slog.String("name", pkg.Name),
+						slog.String("version", pkg.Version.String()),
+						slog.String("filename", pkg.Filename))
+
+					continue
+				} else if err != nil {
+					return nil, fmt.Errorf("failed to hash pool file %s: %w", pkg.Filename, err)
+				}
+
+				sumsForPoolPath[pkg.Filename] = sums
+			}
+
+			pkg.MD5sum = sums.MD5
+			pkg.SHA1 = sums.SHA1
+			backfilled[releaseComponent] = true
 		}
 	}
 
-	return nil
+	return backfilled, nil
 }
 
 // surplusVersions returns the versions of one package that fall outside
@@ -859,19 +1019,19 @@ func contentsIndiceNames(arch string) []string {
 	}
 }
 
-// writeContentsIndice rewrites the Contents indice for an architecture.
-// packages is everything the architecture publishes, newPackages and
-// removedPackages what this build added and dropped; reread forces every
-// package to be read back from the pool rather than only those whose published
-// contents can have changed.
-func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackages, removedPackages []types.Package, reread bool) error {
+// writeContentsIndice rewrites the Contents indice for an architecture,
+// reporting whether any published variant changed. packages is everything the
+// architecture publishes, newPackages and removedPackages what this build
+// added and dropped; reread forces every package to be read back from the pool
+// rather than only those whose published contents can have changed.
+func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackages, removedPackages []types.Package, reread bool) (bool, error) {
 	contentsPath := filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
 
 	// Paths shipped by each qualified package name, seeded with whatever the
 	// existing indice holds for the packages we are not rewriting.
 	packageFiles, err := readContentsIndice(contentsPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// Contents has no version column, so a name can be described only once.
@@ -916,7 +1076,7 @@ func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackag
 
 		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
 		if err != nil {
-			return fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
+			return false, fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
 		}
 
 		// Drop the package's previous entries, whatever section it was filed
@@ -957,43 +1117,97 @@ func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackag
 		sort.Strings(packages)
 
 		if err := cw.Write(contents.Entry{Path: path, Packages: packages}); err != nil {
-			return fmt.Errorf("failed to write contents: %w", err)
+			return false, fmt.Errorf("failed to write contents: %w", err)
 		}
 	}
 
+	var changed bool
 	for _, name := range contentsIndiceNames(arch) {
-		if err := writeIndiceFile(filepath.Join(componentDir, name), contentsList.Bytes()); err != nil {
-			return fmt.Errorf("failed to write Contents file: %w", err)
+		fileChanged, err := writeIndiceFile(filepath.Join(componentDir, name), contentsList.Bytes())
+		if err != nil {
+			return changed, fmt.Errorf("failed to write Contents file: %w", err)
 		}
+
+		changed = changed || fileChanged
 	}
 
-	return nil
+	return changed, nil
 }
 
 // writeIndiceFile writes body to path, compressed according to the path's
-// extension.
-func writeIndiceFile(path string, body []byte) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer f.Close()
+// extension, reporting whether the published bytes changed. A file whose
+// contents are already correct is left alone, so that a mirror does not see
+// its mtime churn.
+func writeIndiceFile(path string, body []byte) (bool, error) {
+	var published bytes.Buffer
 
-	w, err := uncompr.NewWriter(f, f.Name())
+	w, err := uncompr.NewWriter(&published, path)
 	if err != nil {
-		return fmt.Errorf("failed to create compression writer: %w", err)
+		return false, fmt.Errorf("failed to create compression writer: %w", err)
 	}
-	defer w.Close()
 
 	if _, err := w.Write(body); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		_ = w.Close()
+
+		return false, fmt.Errorf("failed to compress file: %w", err)
 	}
 
-	// Flush the compressor before the deferred close, so a failed flush is
-	// reported rather than silently truncating the indice.
+	// Flush the compressor explicitly, so a failed flush is reported rather
+	// than silently truncating the indice.
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("failed to close compression writer: %w", err)
+		return false, fmt.Errorf("failed to close compression writer: %w", err)
 	}
+
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, published.Bytes()) {
+		return false, nil
+	}
+
+	if err := writeFileAtomic(path, published.Bytes(), 0o644); err != nil {
+		return false, fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return true, nil
+}
+
+// writeFileAtomic writes body through a temporary in the same directory and
+// renames it into place. The published file may be hard linked from the
+// by-hash tree, where rewriting it in place would silently change the contents
+// served under its old checksum; the temporary is dot prefixed so that a
+// crashed build cannot leave behind something the Release globs would match
+// and sign.
+func writeFileAtomic(path string, body []byte, perm os.FileMode) error {
+	dir, base := filepath.Dir(path), filepath.Base(path)
+
+	f, err := os.CreateTemp(dir, "."+base+".*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpPath := f.Name()
+
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := f.Write(body); err != nil {
+		_ = f.Close()
+
+		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return fmt.Errorf("failed to set file permissions: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+	tmpPath = ""
 
 	return nil
 }
@@ -1078,20 +1292,35 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 
 	slices.Sort(components)
 
+	byHash := conf.ByHashEnabled()
+
 	r := types.Release{
-		Origin:        releaseConf.Origin,
-		Label:         releaseConf.Label,
-		Suite:         releaseConf.Suite,
-		Version:       releaseConf.Version,
-		Codename:      releaseConf.Name,
-		Changelogs:    changelogs,
-		Date:          time.Time(stdtime.Now().UTC()),
-		Architectures: list.SpaceDelimited[arch.Arch](architectures),
-		Components:    list.SpaceDelimited[string](components),
-		Description:   releaseConf.Description,
+		Origin:                      releaseConf.Origin,
+		Label:                       releaseConf.Label,
+		Suite:                       releaseConf.Suite,
+		Version:                     releaseConf.Version,
+		Codename:                    releaseConf.Name,
+		Changelogs:                  changelogs,
+		Date:                        time.Time(stdtime.Now().UTC()),
+		Architectures:               list.SpaceDelimited[arch.Arch](architectures),
+		Components:                  list.SpaceDelimited[string](components),
+		Description:                 releaseConf.Description,
+		NoSupportForArchitectureAll: noSupportForArchitectureAll(architectures),
 	}
 
-	if existing, err := readReleaseFile(releaseDir, privateKey); err == nil {
+	if byHash {
+		acquireByHash := boolean.Boolean(true)
+		r.AcquireByHash = &acquireByHash
+	}
+
+	// The existing release is both the change oracle and the record of the
+	// previous by-hash generation, so it is kept rather than only compared.
+	existing, err := readReleaseFile(releaseDir, privateKey)
+	if err != nil {
+		// Nothing to compare against, and nothing published for a client to be
+		// holding: the release has to be written whatever the indices did.
+		modified = true
+	} else {
 		slices.SortFunc(existing.Architectures, func(a, b arch.Arch) int {
 			return strings.Compare(a.String(), b.String())
 		})
@@ -1106,37 +1335,339 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 			existing.Changelogs != r.Changelogs ||
 			!slices.Equal(existing.Architectures, r.Architectures) ||
 			!slices.Equal(existing.Components, r.Components) ||
-			existing.Description != r.Description
+			existing.Description != r.Description ||
+			existing.NoSupportForArchitectureAll != r.NoSupportForArchitectureAll ||
+			!equalAcquireByHash(existing.AcquireByHash, r.AcquireByHash) ||
+			// An older build published SHA256 alone.
+			len(existing.MD5Sum) == 0 || len(existing.SHA1) == 0 || len(existing.SHA256) == 0
+	}
+
+	previous := map[string]map[string]bool{}
+	if existing != nil {
+		previous = byHashSetsFromRelease(existing)
+	}
+
+	// A by-hash entry the live release names has to be on disk, or a client
+	// that read it fetches a 404. Statting is enough; nothing is hashed.
+	if byHash && !modified {
+		modified = !byHashComplete(releaseDir, previous)
 	}
 
 	if !modified {
 		slog.Info("Skipping release generation, no changes", slog.String("dir", releaseDir))
+
+		if byHash {
+			// Nothing was superseded, but entries retired by an earlier build
+			// still age out.
+			return pruneByHash(releaseDir, previous, previous, conf.ByHashRetention())
+		}
 
 		return nil
 	}
 
 	slog.Info("Writing Release file", slog.String("dir", releaseDir))
 
-	var err error
-	r.SHA256, err = sha256sum.Directory(releaseDir, []string{"*/binary-*/Packages*", "*/Contents-*"})
+	sums, err := hashsum.Directory(releaseDir, releaseIndiceGlobs)
 	if err != nil {
 		return fmt.Errorf("failed to hash release: %w", err)
 	}
 
-	releaseFile, err := os.Create(filepath.Join(releaseDir, "InRelease"))
-	if err != nil {
-		return fmt.Errorf("failed to create Release file: %w", err)
-	}
-	defer releaseFile.Close()
+	r.MD5Sum = hashsum.MD5List(sums)
+	r.SHA1 = hashsum.SHA1List(sums)
+	r.SHA256 = hashsum.SHA256List(sums)
 
-	encoder, err := deb822.NewEncoder(releaseFile, privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to create encoder: %w", err)
-	}
-	defer encoder.Close()
+	current := map[string]map[string]bool{}
+	if byHash {
+		current = byHashSets(sums)
 
-	if err := encoder.Encode(r); err != nil {
+		// Publish the tree before the release advertises it, so that
+		// Acquire-By-Hash is never live over an incomplete tree.
+		if err := linkByHash(releaseDir, sums); err != nil {
+			return fmt.Errorf("failed to publish by-hash indices: %w", err)
+		}
+	}
+
+	// One rendering of the stanza for all three files, so they cannot disagree.
+	var body bytes.Buffer
+	if err := deb822.Marshal(&body, r); err != nil {
 		return fmt.Errorf("failed to encode release: %w", err)
+	}
+
+	if err := writeFileAtomic(filepath.Join(releaseDir, "Release"), body.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("failed to write Release file: %w", err)
+	}
+
+	var detachedSignature bytes.Buffer
+	// Pin the signature to the primary key, which is what the clearsigned
+	// InRelease is made with; a detached signature would otherwise prefer a
+	// signing subkey and the two would be made by different keys.
+	if err := openpgp.ArmoredDetachSign(&detachedSignature, privateKey, bytes.NewReader(body.Bytes()), &packet.Config{
+		SigningKeyId: privateKey.PrimaryKey.KeyId,
+		DefaultHash:  crypto.SHA256,
+	}); err != nil {
+		return fmt.Errorf("failed to sign Release file: %w", err)
+	}
+
+	if err := writeFileAtomic(filepath.Join(releaseDir, "Release.gpg"), detachedSignature.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("failed to write Release signature: %w", err)
+	}
+
+	var inRelease bytes.Buffer
+	clearsignWriter, err := clearsign.Encode(&inRelease, privateKey.PrivateKey, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create clearsign writer: %w", err)
+	}
+
+	if _, err := clearsignWriter.Write(body.Bytes()); err != nil {
+		_ = clearsignWriter.Close()
+
+		return fmt.Errorf("failed to clearsign release: %w", err)
+	}
+
+	if err := clearsignWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close clearsign writer: %w", err)
+	}
+
+	// InRelease is written last: it is the file apt prefers, so it is what
+	// makes the new generation live.
+	if err := writeFileAtomic(filepath.Join(releaseDir, "InRelease"), inRelease.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("failed to write InRelease file: %w", err)
+	}
+
+	if !byHash {
+		// The flag is gone from the release just published, so the tree it
+		// described can go too. Never the other way round.
+		return removeByHash(releaseDir)
+	}
+
+	return pruneByHash(releaseDir, current, previous, conf.ByHashRetention())
+}
+
+// noSupportForArchitectureAll returns the value of the Release field of the
+// same name for a release publishing these architectures. Architecture `all`
+// packages are normally folded into every architecture's indices, which is
+// exactly what the field tells apt; a component with nothing to fold them into
+// still publishes binary-all, and the field would then tell apt to ignore
+// indices the release does list.
+func noSupportForArchitectureAll(architectures []arch.Arch) string {
+	if slices.ContainsFunc(architectures, func(a arch.Arch) bool { return a.Is(archAll) }) {
+		return ""
+	}
+
+	return "Packages"
+}
+
+func equalAcquireByHash(a, b *boolean.Boolean) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+
+	return *a == *b
+}
+
+// byHashDir is the directory an index's by-hash entries for one algorithm are
+// published in, relative to the release directory and slash separated.
+func byHashDir(indicePath, algorithm string) string {
+	return path.Join(path.Dir(indicePath), hashsum.ByHashDirName, algorithm)
+}
+
+// byHashSets maps each by-hash directory to the set of entries these checksums
+// call for.
+func byHashSets(sums []hashsum.Sums) map[string]map[string]bool {
+	sets := make(map[string]map[string]bool)
+
+	for _, s := range sums {
+		for _, digest := range s.Digests() {
+			dir := byHashDir(s.Path, digest.Algorithm)
+			if sets[dir] == nil {
+				sets[dir] = make(map[string]bool)
+			}
+
+			sets[dir][digest.Hash] = true
+		}
+	}
+
+	return sets
+}
+
+// byHashSetsFromRelease maps each by-hash directory to the set of entries a
+// release file names, which is what a client holding it can still ask for.
+func byHashSetsFromRelease(r *types.Release) map[string]map[string]bool {
+	sets := make(map[string]map[string]bool)
+
+	for algorithm, hashes := range map[string]list.NewLineDelimited[filehash.FileHash]{
+		"MD5Sum": r.MD5Sum,
+		"SHA1":   r.SHA1,
+		"SHA256": r.SHA256,
+	} {
+		for _, hash := range hashes {
+			dir := byHashDir(hash.Filename, algorithm)
+			if sets[dir] == nil {
+				sets[dir] = make(map[string]bool)
+			}
+
+			sets[dir][hash.Hash] = true
+		}
+	}
+
+	return sets
+}
+
+// byHashComplete reports whether every entry of the sets is on disk.
+func byHashComplete(releaseDir string, sets map[string]map[string]bool) bool {
+	for dir, hashes := range sets {
+		for hash := range hashes {
+			if _, err := os.Stat(filepath.Join(releaseDir, filepath.FromSlash(dir), hash)); err != nil {
+				slog.Info("Republishing release, by-hash entry is missing",
+					slog.String("entry", path.Join(dir, hash)))
+
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// linkByHash publishes every checksum of every index as a hard link to the
+// index itself, so that a client which read a release can still fetch what it
+// names after a later build has replaced the index. One inode holds the
+// content however many names point at it.
+func linkByHash(releaseDir string, sums []hashsum.Sums) error {
+	for _, s := range sums {
+		indicePath := filepath.Join(releaseDir, filepath.FromSlash(s.Path))
+
+		for _, digest := range s.Digests() {
+			dir := filepath.Join(releaseDir, filepath.FromSlash(byHashDir(s.Path, digest.Algorithm)))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("failed to create by-hash directory: %w", err)
+			}
+
+			entryPath := filepath.Join(dir, digest.Hash)
+			if _, err := os.Stat(entryPath); err == nil {
+				// The name is the digest of the content, so an entry that is
+				// already there holds exactly these bytes.
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("failed to stat by-hash entry: %w", err)
+			}
+
+			if err := os.Link(indicePath, entryPath); err != nil {
+				return fmt.Errorf("failed to link by-hash entry: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// pruneByHash retires superseded by-hash entries. An entry the previous
+// release named but this one does not has just gone stale, so its clock is
+// started here: a hard link's mtime is when its content was created, not when
+// it stopped being current, and an age sweep over that would delete the
+// predecessor of an index that had sat unchanged for a month the moment it
+// changed. Entries named by neither release are removed once they are older
+// than the retention window.
+func pruneByHash(releaseDir string, current, previous map[string]map[string]bool, retention stdtime.Duration) error {
+	now := stdtime.Now()
+
+	err := filepath.WalkDir(releaseDir, func(dirPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !d.IsDir() || d.Name() != hashsum.ByHashDirName {
+			return nil
+		}
+
+		algorithms, err := os.ReadDir(dirPath)
+		if err != nil {
+			return err
+		}
+
+		for _, algorithm := range algorithms {
+			if !algorithm.IsDir() {
+				continue
+			}
+
+			algorithmDir := filepath.Join(dirPath, algorithm.Name())
+
+			relativeDir, err := filepath.Rel(releaseDir, algorithmDir)
+			if err != nil {
+				return err
+			}
+			key := filepath.ToSlash(relativeDir)
+
+			entries, err := os.ReadDir(algorithmDir)
+			if err != nil {
+				return err
+			}
+
+			for _, entry := range entries {
+				if entry.IsDir() || current[key][entry.Name()] {
+					continue
+				}
+
+				entryPath := filepath.Join(algorithmDir, entry.Name())
+
+				if previous[key][entry.Name()] {
+					// Superseded by this build: start its retention window now.
+					if err := os.Chtimes(entryPath, stdtime.Time{}, now); err != nil {
+						return fmt.Errorf("failed to touch superseded by-hash entry: %w", err)
+					}
+
+					continue
+				}
+
+				info, err := entry.Info()
+				if err != nil {
+					return err
+				}
+
+				if now.Sub(info.ModTime()) < retention {
+					continue
+				}
+
+				slog.Info("Removing expired by-hash entry",
+					slog.String("entry", path.Join(key, entry.Name())))
+
+				if err := os.Remove(entryPath); err != nil {
+					return fmt.Errorf("failed to remove expired by-hash entry: %w", err)
+				}
+			}
+		}
+
+		return fs.SkipDir
+	})
+	if err != nil {
+		return fmt.Errorf("failed to prune by-hash entries: %w", err)
+	}
+
+	return nil
+}
+
+// removeByHash deletes every by-hash tree under a release, which is what
+// turning the feature off has to do once the release no longer advertises it.
+func removeByHash(releaseDir string) error {
+	err := filepath.WalkDir(releaseDir, func(dirPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !d.IsDir() || d.Name() != hashsum.ByHashDirName {
+			return nil
+		}
+
+		slog.Info("Removing by-hash directory", slog.String("dir", dirPath))
+
+		if err := os.RemoveAll(dirPath); err != nil {
+			return fmt.Errorf("failed to remove by-hash directory: %w", err)
+		}
+
+		return fs.SkipDir
+	})
+	if err != nil {
+		return fmt.Errorf("failed to remove by-hash directories: %w", err)
 	}
 
 	return nil

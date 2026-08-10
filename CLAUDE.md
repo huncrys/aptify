@@ -58,15 +58,23 @@ The build is a single pass over the config with these stages, in order:
    copied into `pool/<component>/<prefix>/<source>/`. A package already present with a
    matching SHA256 is skipped; a mismatch logs a warning and overwrites. `prefix` is the
    first letter of the source name, or `lib?` for `lib*` - standard Debian pool layout.
-3. **Prune.** `max_versions` per component drops the oldest versions (sorted by
+3. **Prune, then backfill.** `max_versions` per component drops the oldest versions (sorted by
    `types.Package.Compare`) into a removed set. `surplusVersions` judges a package the
    way a client sees it: because architecture `all` packages are folded into every
    architecture's index, they compete with each architecture's own versions, and one is
    dropped only when it is surplus for *every* architecture publishing it. Keeping an
    `all` version another architecture still needs can leave one architecture above
    `max_versions` - there is a single entry to keep or drop, not one per architecture.
+   `backfillPackageDigests` then fills what older builds did not publish -
+   `Description-md5` from the description, `MD5sum` and `SHA1` by re-reading the pool -
+   and names the release/components whose `Packages` must therefore be rewritten. The
+   ingest fast path keeps the stanza it already has for an unchanged `.deb`, so this is
+   the only route by which an existing repository gains the fields; a missing pool file
+   warns rather than failing.
 4. **Write indices.** Per release/component/architecture: `Packages`, `Packages.gz`,
-   `Packages.xz`, and both `Contents-<arch>` and `Contents-<arch>.gz`. Every index has to
+   `Packages.xz`, both `Contents-<arch>` and `Contents-<arch>.gz`, and the
+   `binary-<arch>/Release` stub (`types.ComponentRelease`), which is rendered and
+   compared on every build so an older repository grows one. Every index has to
    be published under its uncompressed name too: apt resolves a target by the uncompressed
    key in the Release file and only then picks a compressed variant to fetch, so an index
    listed only as `.gz` is silently never acquired (this is what kept `apt-file` from
@@ -93,8 +101,9 @@ The build is a single pass over the config with these stages, in order:
 ### Incrementality
 
 This is the subtlety most changes have to respect. Both indices are skipped when a
-release/component/arch has no new and no removed packages, unless `--force` or
-`--reread`. `Contents` is rewritten anyway when `contentsIndiceComplete` finds a variant
+release/component/arch has no new and no removed packages, unless `--force`, `--reread`
+or a backfill touched the component. `Contents` is rewritten anyway when
+`contentsIndiceComplete` finds a variant
 missing, so a repository published before both variants were written heals itself on the
 next build.
 
@@ -113,12 +122,36 @@ The consequence worth remembering: adding an *older* version of a package must n
 change `Contents`, and pruning the version it described must. Judging by "which packages
 did this build touch" gets both wrong, which is what the winner comparison replaced.
 
+`writeIndiceFile` compresses into a buffer, compares against what is on disk and skips a
+write whose bytes would be identical; a real write goes through a dot-prefixed temporary
+and a rename, never a truncate, because a by-hash entry hard links the published file.
+Every writer therefore reports *whether the bytes changed*, and that is what sets
+`modified` - regenerating an index with the same content does not republish the release.
+
 `writeReleaseFile` decodes the existing `InRelease` (verifying against the signing key)
-and compares every metadata field; it rewrites only when something changed or an index
-was regenerated. Only `InRelease` is written - no detached `Release`/`Release.gpg`. Its
-checksums come from `sha256sum.Directory`, restricted to the globs
-`*/binary-*/Packages*` and `*/Contents-*`; anything new that apt must verify has to be
-added to that glob list or it will be signed for but unlisted.
+and compares every metadata field; it rewrites only when something changed, an index was
+regenerated, the existing stanza lacks a hash list, or a by-hash entry it names has gone
+missing. `Release`, `Release.gpg` (detached, pinned to the primary key) and `InRelease`
+are all written, from one marshalled buffer so they cannot disagree, and `InRelease`
+last because it is what apt prefers. Its checksums come from `hashsum.Directory`,
+restricted to `releaseIndiceGlobs` (`*/binary-*/Packages*`, `*/binary-*/Release`,
+`*/Contents-*`); anything new that apt must verify has to be added to that glob list or
+it will be signed for but unlisted, and widening it to `*/binary-*/*` would list the
+by-hash entries themselves.
+
+### by-hash
+
+Off unless `by_hash.enabled` is set (`conf.ByHashEnabled()`), and wholly inert when off.
+Each listed index is hard linked to `dirname(index)/by-hash/<MD5Sum|SHA1|SHA256>/<hex>`,
+so a client that read a release can still fetch what it names after a later build
+replaced the index. Linking happens *before* the release is signed - the flag must never
+be live over an incomplete tree - and the prune *after* it, so a crash never destroys a
+blob the live `InRelease` still names. A hard link's mtime is when its content was
+created, not when it stopped being current, so `pruneByHash` touches an entry as it
+leaves the release and only deletes it `by_hash.retention` (7 days by default) later;
+Contents entries live in the component-level `by-hash/`, which is why the sweep walks
+every directory rather than only `binary-*`. Turning the feature off emits no flag and
+then deletes every tree, in that order.
 
 Timestamps are preserved deliberately (pool copies via `PreserveTimes`, changelog mtimes
 from the archive, `signing_key.asc` mtime from the private key) so that re-running a

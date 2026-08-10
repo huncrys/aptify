@@ -20,11 +20,16 @@ package v1alpha1
 
 import (
 	"fmt"
+	"time"
 
 	"oaklab.hu/debian/aptify/internal/config/types"
 )
 
 const APIVersion = "aptify/v1alpha1"
+
+// defaultByHashRetention is how long a superseded by-hash entry is kept once it
+// stops being named by the release, when no retention is configured.
+const defaultByHashRetention = 7 * 24 * time.Hour
 
 type Repository struct {
 	types.TypeMeta `yaml:",inline"`
@@ -32,8 +37,21 @@ type Repository struct {
 	URL string
 	// Whether to generate changelogs
 	Changelogs bool
+	// ByHash configures publishing the indices under their checksums as well,
+	// so that a client which read a release can still fetch the indices it
+	// names after a later build has replaced them.
+	ByHash ByHashConfig `yaml:"by_hash,omitempty"`
 	// Releases is the list of releases to generate.
 	Releases []ReleaseConfig
+}
+
+// ByHashConfig is the configuration for by-hash index publishing.
+type ByHashConfig struct {
+	// Enabled turns by-hash publishing on. Off by default.
+	Enabled bool
+	// Retention is how long an entry is kept after it stops being named by the
+	// release. If not specified, entries are kept for seven days.
+	Retention time.Duration
 }
 
 // ReleaseConfig is the configuration for a release.
@@ -86,6 +104,21 @@ func (r *Repository) PopulateTypeMeta() {
 
 func (r *Repository) HasChangelogs() bool {
 	return r.Changelogs && r.URL != ""
+}
+
+// ByHashEnabled reports whether the indices are published under their
+// checksums as well.
+func (r *Repository) ByHashEnabled() bool {
+	return r.ByHash.Enabled
+}
+
+// ByHashRetention is how long a superseded by-hash entry is kept.
+func (r *Repository) ByHashRetention() time.Duration {
+	if r.ByHash.Retention <= 0 {
+		return defaultByHashRetention
+	}
+
+	return r.ByHash.Retention
 }
 
 func GetConfigByKind(kind string) (types.Config, error) {

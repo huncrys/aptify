@@ -74,7 +74,10 @@ The build is a single pass over the config with these stages, in order:
 4. **Write indices.** Per release/component/architecture: `Packages`, `Packages.gz`,
    `Packages.xz`, both `Contents-<arch>` and `Contents-<arch>.gz`, and the
    `binary-<arch>/Release` stub (`types.ComponentRelease`), which is rendered and
-   compared on every build so an older repository grows one. Every index has to
+   compared on every build so an older repository grows one. The stub deliberately
+   carries only apt's pin keys (Archive, Origin, Label, Version, Component,
+   Architecture, plus Acquire-By-Hash) - no Description; neither Debian nor Ubuntu
+   ships one there. Every index has to
    be published under its uncompressed name too: apt resolves a target by the uncompressed
    key in the Release file and only then picks a compressed variant to fetch, so an index
    listed only as `.gz` is silently never acquired (this is what kept `apt-file` from
@@ -152,6 +155,10 @@ leaves the release and only deletes it `by_hash.retention` (7 days by default) l
 Contents entries live in the component-level `by-hash/`, which is why the sweep walks
 every directory rather than only `binary-*`. Turning the feature off emits no flag and
 then deletes every tree, in that order.
+
+by-hash covers only the indices the Release lists. Pool `.deb`s are fetched by their
+canonical path, so replacing one under an unchanged filename still breaks clients with
+stale lists until they `apt-get update` - a rebuilt package wants a version bump.
 
 Timestamps are preserved deliberately (pool copies via `PreserveTimes`, changelog mtimes
 from the archive, `signing_key.asc` mtime from the private key) so that re-running a

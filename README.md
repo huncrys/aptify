@@ -63,9 +63,16 @@ that configures the AWS CLI configures aptify: `AWS_ACCESS_KEY_ID` and
 (RadosGW), RustFS - is addressed by setting `AWS_ENDPOINT_URL`:
 
 ```shell
+export AWS_REGION=garage
 export AWS_ENDPOINT_URL=https://s3.example.com
 aptify build -c examples/demo.yaml -d s3://apt/debian
 ```
+
+`AWS_REGION` has to name the region the server is configured with (Garage calls
+it `s3_region` and defaults it to `garage`); without one aptify falls back to
+`us-east-1`, and a mismatch fails at the first request with
+`AuthorizationHeaderMalformed`, naming both the region it got and the one it
+expected.
 
 A custom endpoint switches bucket addressing to path style, which is what
 self-hosted implementations usually expect. Override it either way with the

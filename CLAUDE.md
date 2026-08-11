@@ -276,7 +276,9 @@ mtime). Every name is repository-relative and slash separated - build them with
 - `repofs.New(ctx, target)` picks between them: `s3://bucket/prefix` is a bucket,
   anything else a directory. Credentials, region and endpoint come from the standard AWS
   chain; a custom `AWS_ENDPOINT_URL` turns on path-style addressing, overridable with the
-  `path_style` query parameter.
+  `path_style` query parameter. The region falls back to `us-east-1` and has to match
+  what a self-hosted server is configured with (Garage's `s3_region`), or every request
+  fails with `AuthorizationHeaderMalformed`.
 
 `internal/repofs/s3test` serves a bucket in process (`gofakes3`), which is what the
 `internal/repo` S3 end-to-end tests build against: the same `verifyRepoFS` and

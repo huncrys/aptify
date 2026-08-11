@@ -31,20 +31,42 @@ import (
 // indices rather than in one of its own.
 var archAll = new(arch.MustParse("all"))
 
+// sourceNameOf is the source package a binary package is filed under: the
+// Source field when it names one, otherwise the binary package standing in for
+// its own source. Control fields arrive with their surrounding whitespace still
+// attached, so either name is trimmed before it becomes part of a path.
+func sourceNameOf(pkg *types.Package) string {
+	if pkg.Source != nil {
+		if source := strings.TrimSpace(pkg.Source.Name); source != "" {
+			return source
+		}
+	}
+
+	return strings.TrimSpace(pkg.Name)
+}
+
+// sourcePrefix is the directory a source package is filed under: its first
+// letter, or lib? so that the thousands of lib* sources do not land in one
+// enormous l/. A name too short for the lib? form, "lib" itself included, keeps
+// the plain first letter, and a package that names nothing at all gets no
+// prefix rather than a panic.
+func sourcePrefix(source string) string {
+	switch {
+	case source == "":
+		return ""
+	case len(source) > 3 && strings.HasPrefix(source, "lib"):
+		return source[:4]
+	default:
+		return source[:1]
+	}
+}
+
 func poolPathForPackage(componentName string, pkg *types.Package) string {
-	pkgName := strings.TrimSpace(pkg.Name)
-	var source string
-	if pkg.Source != nil && pkg.Source.Name != "" {
-		source = pkg.Source.Name
-	} else {
-		source = pkgName
-	}
+	source := sourceNameOf(pkg)
 
-	prefix := source[:1]
-	if strings.HasPrefix(source, "lib") {
-		prefix = source[:4]
-	}
-
-	return filepath.Join("pool", componentName, prefix, source,
-		fmt.Sprintf("%s_%s_%s.deb", pkgName, pkg.Version, pkg.Architecture))
+	// Debian names pool files without the epoch, so that the URL apt fetches
+	// carries no colon.
+	return filepath.Join("pool", componentName, sourcePrefix(source), source,
+		fmt.Sprintf("%s_%s_%s.deb", strings.TrimSpace(pkg.Name),
+			pkg.Version.StringWithoutEpoch(), pkg.Architecture))
 }

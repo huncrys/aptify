@@ -127,13 +127,70 @@ func TestPoolPathForPackage(t *testing.T) {
 			want:      "pool/main/h/hello-world/hello-world_1.0_amd64.deb",
 		},
 		{
-			// Unlike the changelog path, the pool file keeps the epoch.
-			name:      "the epoch is kept in the file name",
+			// Control fields arrive with their leading space still attached,
+			// and the source names two components of the path.
+			name:      "whitespace around the source package name is trimmed",
+			component: "main",
+			pkgName:   "hello-world",
+			version:   "1.0",
+			arch:      "amd64",
+			source:    &dependency.Source{Name: " libhello "},
+			want:      "pool/main/libh/libhello/hello-world_1.0_amd64.deb",
+		},
+		{
+			name:      "a whitespace only source falls back to the package name",
+			component: "main",
+			pkgName:   "hello-world",
+			version:   "1.0",
+			arch:      "amd64",
+			source:    &dependency.Source{Name: "   "},
+			want:      "pool/main/h/hello-world/hello-world_1.0_amd64.deb",
+		},
+		{
+			// Too short for the lib? form, so it keeps the plain first letter.
+			name:      "a source named exactly lib",
+			component: "main",
+			pkgName:   "lib",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "pool/main/l/lib/lib_1.0_amd64.deb",
+		},
+		{
+			name:      "a source shorter than the lib prefix",
+			component: "main",
+			pkgName:   "li",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "pool/main/l/li/li_1.0_amd64.deb",
+		},
+		{
+			// The shortest name the lib? form applies to.
+			name:      "a source of exactly four letters",
+			component: "main",
+			pkgName:   "libc",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "pool/main/libc/libc/libc_1.0_amd64.deb",
+		},
+		{
+			// A .deb with no Package field has nothing to build a prefix from;
+			// it still gets a path rather than crashing the build.
+			name:      "a package with no name at all",
+			component: "main",
+			pkgName:   "",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "pool/main/_1.0_amd64.deb",
+		},
+		{
+			// dpkg-name leaves the epoch out, so the URL apt fetches carries no
+			// colon.
+			name:      "the epoch is stripped from the file name",
 			component: "main",
 			pkgName:   "hello-world",
 			version:   "2:1.0-1",
 			arch:      "amd64",
-			want:      "pool/main/h/hello-world/hello-world_2:1.0-1_amd64.deb",
+			want:      "pool/main/h/hello-world/hello-world_1.0-1_amd64.deb",
 		},
 		{
 			name:      "a native version keeps its revision",

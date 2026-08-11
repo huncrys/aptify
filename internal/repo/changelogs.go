@@ -220,18 +220,18 @@ func placeholderChangelog(source string, pkgVer version.Version, maintainer stri
 }
 
 // changelogSource is the source package a changelog is filed under and the
-// version it is published at: the Source field when the package names one,
-// otherwise the binary package standing in for its own source.
+// version it is published at. The source version applies only when the Source
+// field is what named the package: a Source carrying a version but no name is
+// not a rename, and the binary version is then what the changelog is written
+// at.
 func changelogSource(pkg *types.Package) (string, *version.Version) {
-	if pkg.Source != nil && pkg.Source.Name != "" {
-		if pkg.Source.Version != nil {
-			return pkg.Source.Name, pkg.Source.Version
-		}
+	source := sourceNameOf(pkg)
 
-		return pkg.Source.Name, &pkg.Version
+	if pkg.Source != nil && pkg.Source.Version != nil && source == strings.TrimSpace(pkg.Source.Name) {
+		return source, pkg.Source.Version
 	}
 
-	return strings.TrimSpace(pkg.Name), &pkg.Version
+	return source, &pkg.Version
 }
 
 // preferChangelogSource reports whether candidate should provide the changelog
@@ -259,10 +259,6 @@ func preferChangelogSource(candidate, current *types.Package) bool {
 func changelogPathForPackage(componentName string, pkg *types.Package) string {
 	pkgSource, pkgVer := changelogSource(pkg)
 
-	prefix := pkgSource[:1]
-	if strings.HasPrefix(pkgSource, "lib") {
-		prefix = pkgSource[:4]
-	}
-
-	return filepath.Join(componentName, prefix, pkgSource, pkgSource+"_"+pkgVer.StringWithoutEpoch()+".changelog")
+	return filepath.Join(componentName, sourcePrefix(pkgSource), pkgSource,
+		pkgSource+"_"+pkgVer.StringWithoutEpoch()+".changelog")
 }

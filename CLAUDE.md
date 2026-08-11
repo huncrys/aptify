@@ -72,7 +72,11 @@ the tests. The build is a single pass over the config with these stages, in orde
 2. **Ingest.** Config globs are expanded, metadata read from each `.deb`, and packages
    copied into `pool/<component>/<prefix>/<source>/`. A package already present with a
    matching SHA256 is skipped; a mismatch logs a warning and overwrites. `prefix` is the
-   first letter of the source name, or `lib?` for `lib*` - standard Debian pool layout.
+   first letter of the source name, or `lib?` for a `lib*` long enough to have one -
+   standard Debian pool layout. The file itself is `<binary>_<version without
+   epoch>_<arch>.deb`, dpkg-name's convention, which keeps the colon of an epoch out of
+   the URL apt fetches; only new ingests compute a path, a published package keeps the
+   `Filename` its stanza records.
 3. **Prune, then backfill.** `max_versions` per component drops the oldest versions (sorted by
    `types.Package.Compare`) into a removed set. `surplusVersions` judges a package the
    way a client sees it: because architecture `all` packages are folded into every

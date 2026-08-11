@@ -129,6 +129,61 @@ func TestChangelogPathForPackage(t *testing.T) {
 			want:      "main/h/hello-world/hello-world_1.0.changelog",
 		},
 		{
+			// The source names three components of the path, so an untrimmed
+			// one corrupts all of them.
+			name:      "whitespace around the source package name is trimmed",
+			component: "main",
+			pkgName:   "libhello-dev",
+			version:   "1.0",
+			arch:      "amd64",
+			source:    &dependency.Source{Name: " libhello "},
+			want:      "main/libh/libhello/libhello_1.0.changelog",
+		},
+		{
+			name:      "a whitespace only source falls back to the package name",
+			component: "main",
+			pkgName:   "hello-world",
+			version:   "1.0",
+			arch:      "amd64",
+			source:    &dependency.Source{Name: "   "},
+			want:      "main/h/hello-world/hello-world_1.0.changelog",
+		},
+		{
+			// Too short for the lib? form, so it keeps the plain first letter.
+			name:      "a source named exactly lib",
+			component: "main",
+			pkgName:   "lib",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "main/l/lib/lib_1.0.changelog",
+		},
+		{
+			name:      "a source shorter than the lib prefix",
+			component: "main",
+			pkgName:   "li",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "main/l/li/li_1.0.changelog",
+		},
+		{
+			name:      "a source of exactly four letters",
+			component: "main",
+			pkgName:   "libc",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "main/libc/libc/libc_1.0.changelog",
+		},
+		{
+			// Nothing to build a prefix from, but still a path rather than a
+			// crashed build.
+			name:      "a package with no name at all",
+			component: "main",
+			pkgName:   "",
+			version:   "1.0",
+			arch:      "amd64",
+			want:      "main/_1.0.changelog",
+		},
+		{
 			// The architecture is not in the path either: every architecture of
 			// a version resolves to the one file.
 			name:      "the architecture does not name the file",

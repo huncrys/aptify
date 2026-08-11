@@ -19,6 +19,7 @@
 package repo
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -38,66 +39,82 @@ const packagesIndiceGlob = "dists/*/*/binary-*/Packages"
 // makes builds incremental: every dists/*/*/binary-*/Packages is decoded into
 // the package list of its release/component, there is no database.
 func (b *build) loadExisting() error {
-	if dir, err := b.fsys.Stat("."); err == nil && dir.IsDir() {
-		slog.Info("Loading existing repository", slog.String("dir", b.fsys.Name()))
+	dir, err := b.fsys.Stat(".")
+	if err != nil {
+		// Only "nothing published yet" is a fresh repository. Any other
+		// failure - the wrong credentials, the wrong region, a network that is
+		// down - has to stop the build: a target that cannot be read but can be
+		// written to would otherwise be republished from the config alone,
+		// dropping every package the config no longer lists.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 
-		paths, err := b.fsys.Glob(packagesIndiceGlob)
+		return fmt.Errorf("failed to read existing repository %s: %w", b.fsys.Name(), err)
+	}
+
+	if !dir.IsDir() {
+		return fmt.Errorf("repository is not a directory: %s", b.fsys.Name())
+	}
+
+	slog.Info("Loading existing repository", slog.String("dir", b.fsys.Name()))
+
+	paths, err := b.fsys.Glob(packagesIndiceGlob)
+	if err != nil {
+		return fmt.Errorf("failed to find existing Packages files: %w", err)
+	}
+
+	for _, packagesFile := range paths {
+		parts := strings.Split(packagesFile, "/")
+		releaseComponent := strings.Join(parts[len(parts)-4:len(parts)-2], "/")
+		slog.Debug("Found existing Packages file",
+			slog.String("file", packagesFile),
+			slog.String("release_component", releaseComponent))
+
+		if _, ok := b.archs[releaseComponent]; !ok {
+			b.archs[releaseComponent] = make(map[string]bool)
+		}
+
+		packages, err := readPackagesFile(b.fsys, packagesFile)
 		if err != nil {
-			return fmt.Errorf("failed to find existing Packages files: %w", err)
+			return err
 		}
 
-		for _, packagesFile := range paths {
-			parts := strings.Split(packagesFile, "/")
-			releaseComponent := strings.Join(parts[len(parts)-4:len(parts)-2], "/")
-			slog.Debug("Found existing Packages file",
-				slog.String("file", packagesFile),
-				slog.String("release_component", releaseComponent))
+		b.packages[releaseComponent] = append(b.packages[releaseComponent], packages...)
 
-			if _, ok := b.archs[releaseComponent]; !ok {
-				b.archs[releaseComponent] = make(map[string]bool)
-			}
-
-			packages, err := readPackagesFile(b.fsys, packagesFile)
-			if err != nil {
-				return err
-			}
-
-			b.packages[releaseComponent] = append(b.packages[releaseComponent], packages...)
-
-			// Get the architectures from the Packages file.
-			for _, pkg := range packages {
-				b.candidates[pkg.Filename] = true
-				b.archs[releaseComponent][pkg.Architecture.String()] = true
-			}
+		// Get the architectures from the Packages file.
+		for _, pkg := range packages {
+			b.candidates[pkg.Filename] = true
+			b.archs[releaseComponent][pkg.Architecture.String()] = true
 		}
+	}
 
-		// Deduplicate b.packages
-		for releaseComponent, packages := range b.packages {
-			uniquePackages := make([]types.Package, 0, len(packages))
-			for _, pkg := range packages {
-				if !slices.ContainsFunc(uniquePackages, func(existingPkg types.Package) bool {
-					return pkg.Compare(existingPkg) == 0
-				}) {
-					if b.reread {
-						if freshPkg, err := deb.GetMetadata(b.poolFile(pkg.Filename)); err != nil {
-							return fmt.Errorf("failed to reread package metadata: %w", err)
-						} else {
-							// The control file carries none of the checksums
-							// of the package file itself, so they have to be
-							// carried across rather than blanked.
-							freshPkg.MD5sum = pkg.MD5sum
-							freshPkg.SHA1 = pkg.SHA1
-							freshPkg.SHA256 = pkg.SHA256
-							freshPkg.Filename = pkg.Filename
-							freshPkg.Size = pkg.Size
-							pkg = *freshPkg
-						}
+	// Deduplicate b.packages
+	for releaseComponent, packages := range b.packages {
+		uniquePackages := make([]types.Package, 0, len(packages))
+		for _, pkg := range packages {
+			if !slices.ContainsFunc(uniquePackages, func(existingPkg types.Package) bool {
+				return pkg.Compare(existingPkg) == 0
+			}) {
+				if b.reread {
+					if freshPkg, err := deb.GetMetadata(b.poolFile(pkg.Filename)); err != nil {
+						return fmt.Errorf("failed to reread package metadata: %w", err)
+					} else {
+						// The control file carries none of the checksums
+						// of the package file itself, so they have to be
+						// carried across rather than blanked.
+						freshPkg.MD5sum = pkg.MD5sum
+						freshPkg.SHA1 = pkg.SHA1
+						freshPkg.SHA256 = pkg.SHA256
+						freshPkg.Filename = pkg.Filename
+						freshPkg.Size = pkg.Size
+						pkg = *freshPkg
 					}
-					uniquePackages = append(uniquePackages, pkg)
 				}
+				uniquePackages = append(uniquePackages, pkg)
 			}
-			b.packages[releaseComponent] = uniquePackages
 		}
+		b.packages[releaseComponent] = uniquePackages
 	}
 
 	return nil

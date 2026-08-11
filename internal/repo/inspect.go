@@ -20,8 +20,10 @@ package repo
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"slices"
 
 	"oaklab.hu/debian/aptify/internal/repofs"
@@ -30,8 +32,20 @@ import (
 
 // Inspect writes every package the repository publishes to w as JSON.
 func Inspect(fsys repofs.FS, w io.Writer) error {
-	if dir, err := fsys.Stat("."); err != nil || !dir.IsDir() {
-		return fmt.Errorf("repository directory does not exist: %s", fsys.Name())
+	dir, err := fsys.Stat(".")
+	if err != nil {
+		// Only a repository that is genuinely not there gets the friendly
+		// message; the wrong credentials, the wrong region and a bucket that
+		// does not exist all have to say what actually went wrong.
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("repository directory does not exist: %s", fsys.Name())
+		}
+
+		return fmt.Errorf("failed to read repository %s: %w", fsys.Name(), err)
+	}
+
+	if !dir.IsDir() {
+		return fmt.Errorf("repository is not a directory: %s", fsys.Name())
 	}
 
 	files, err := fsys.Glob(packagesIndiceGlob)

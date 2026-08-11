@@ -94,6 +94,34 @@ func (c *countingFS) Chtimes(name string, mtime stdtime.Time) error {
 	return c.FS.Chtimes(name, mtime)
 }
 
+// TestFreshBuildNeverReadsThePool pins the local source fast path: a package
+// this build ingested is read from the file it was copied from, so publishing
+// one costs a single upload rather than an upload and a download back.
+func TestFreshBuildNeverReadsThePool(t *testing.T) {
+	repoDir := t.TempDir()
+
+	conf := singleComponentConfig(0,
+		debPath(t, "hello-world_1.0_amd64.deb"),
+		debPath(t, "hello-world_2.0_amd64.deb"),
+		debPath(t, "hello-world_3.0_all.deb"))
+	conf.URL = testRepositoryURL
+	conf.Changelogs = true
+
+	counting := newCountingFS(repoDir)
+
+	require.NoError(t, Build(Options{
+		FS:             counting,
+		ConfigPath:     writeTestConfig(t, conf),
+		PrivateKeyPath: testKeyPath(t),
+	}))
+
+	// Contents and the changelogs both read every package, and neither goes
+	// back to the pool for one it has the source of.
+	assert.Zero(t, counting.poolReads, "a freshly ingested package was read back out of the pool")
+
+	verifyRepo(t, repoDir, testReleaseName)
+}
+
 // TestRebuildTouchesNothing pins the incrementality from the storage's side:
 // rebuilding an unchanged repository issues no write, no clone, no delete and
 // no touch at all. The snapshot comparisons elsewhere would not notice a

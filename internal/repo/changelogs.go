@@ -123,7 +123,9 @@ func (b *build) writeChangelogs() ([]string, error) {
 
 			pkgSource, pkgVer := changelogSource(&pkg)
 
-			changelogData, changelogTime, err := deb.GetPackageChangelog(pkgSource, pkg.Name, b.poolFilePath(pkg.Filename))
+			pkgFS, pkgName := b.poolFile(pkg.Filename)
+
+			changelogData, changelogTime, err := deb.GetPackageChangelog(pkgFS, pkgName, pkgSource, pkg.Name)
 			if err != nil {
 				switch {
 				case errors.Is(err, deb.ErrPackageUnreadable):

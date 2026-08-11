@@ -20,7 +20,6 @@ package deb
 
 import (
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"strings"
@@ -30,12 +29,14 @@ import (
 	"github.com/dpeckett/uncompr"
 )
 
-func GetPackageContents(path string) ([]string, error) {
-	f, err := os.Open(path)
+// GetPackageContents lists the files shipped by the package named by fsys and
+// name, which is what a Contents indice describes it by.
+func GetPackageContents(fsys fs.FS, name string) ([]string, error) {
+	f, err := openPackage(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open package file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	debFS, err := arfs.Open(f)
 	if err != nil {
@@ -75,20 +76,14 @@ func GetPackageContents(path string) ([]string, error) {
 
 	// Write data archive to temporary file (as we need a seekable reader for the
 	// tarfs implementation).
-	tempFile, err := os.CreateTemp("", "data.tar")
+	tempFile, err := spill(dataArchiveReader)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary file: %w", err)
+		return nil, err
 	}
-	defer os.Remove(tempFile.Name())
-
-	if _, err := io.Copy(tempFile, dataArchiveReader); err != nil {
-		return nil, fmt.Errorf("failed to write data archive to temporary file: %w", err)
-	}
-
-	// Seek to beginning of temporary file.
-	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to seek to beginning of temporary file: %w", err)
-	}
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+	}()
 
 	dataArchiveFS, err := tarfs.Open(tempFile)
 	if err != nil {

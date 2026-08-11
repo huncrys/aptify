@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,12 +42,15 @@ var (
 	ErrPackageUnreadable = errors.New("package file cannot be opened")
 )
 
-func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
-	f, err := os.Open(path)
+// GetPackageChangelog extracts the changelog of the package named by fsys and
+// filename, which ships it under its own name or under that of the source
+// package it was built from.
+func GetPackageChangelog(fsys fs.FS, filename, source, name string) ([]byte, time.Time, error) {
+	f, err := openPackage(fsys, filename)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("%w: %w", ErrPackageUnreadable, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	debFS, err := arfs.Open(f)
 	if err != nil {
@@ -88,20 +92,14 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 
 	// Write data archive to temporary file (as we need a seekable reader for the
 	// tarfs implementation).
-	tempFile, err := os.CreateTemp("", "data.tar")
+	tempFile, err := spill(dataArchiveReader)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to create temporary file: %w", err)
+		return nil, time.Time{}, err
 	}
-	defer os.Remove(tempFile.Name())
-
-	if _, err := io.Copy(tempFile, dataArchiveReader); err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to write data archive to temporary file: %w", err)
-	}
-
-	// Seek to beginning of temporary file.
-	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to seek to beginning of temporary file: %w", err)
-	}
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+	}()
 
 	dataArchiveFS, err := tarfs.Open(tempFile)
 	if err != nil {
@@ -125,7 +123,7 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 				for _, linkcandidate := range []string{filepath.Dir(candidate), candidate} {
 					if stat, err := dataArchiveFS.StatLink(linkcandidate); err == nil {
 						if stat.Mode()&os.ModeSymlink != 0 {
-							return nil, packageModTime(f), ErrChangelogSymlink
+							return nil, f.modTime, ErrChangelogSymlink
 						}
 					}
 				}
@@ -152,16 +150,7 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 		}
 	}
 
-	return nil, packageModTime(f), os.ErrNotExist
-}
-
-// packageModTime dates the placeholder the caller writes when the archive holds
-// no changelog it can publish, so that the published file does not carry the
-// time of the build.
-func packageModTime(f *os.File) time.Time {
-	if stat, err := f.Stat(); err == nil {
-		return stat.ModTime()
-	}
-
-	return time.Now()
+	// The package's own modification time dates the placeholder the caller
+	// writes, so that the published file does not carry the time of the build.
+	return nil, f.modTime, os.ErrNotExist
 }

@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +36,15 @@ import (
 // tested against.
 const fixtureDir = "../../testdata/package"
 
-func fixture(name string) string {
+// fixture addresses a checked-in package the way the readers take one: the
+// filesystem it lives on, and its name on that filesystem.
+func fixture(name string) (fs.FS, string) {
+	return os.DirFS(fixtureDir), name
+}
+
+// fixturePath is the local path of the same package, for the tests that have
+// to stat it.
+func fixturePath(name string) string {
 	return filepath.Join(fixtureDir, name)
 }
 
@@ -166,19 +175,16 @@ func TestGetMetadataErrors(t *testing.T) {
 	})
 
 	t.Run("unsupported package version", func(t *testing.T) {
-		path := writeArArchive(t, "unsupported.deb", arEntry{"debian-binary", []byte("3.0\n")})
-
-		_, err := deb.GetMetadata(path)
+		_, err := deb.GetMetadata(writeArArchive(t, "unsupported.deb",
+			arEntry{"debian-binary", []byte("3.0\n")}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported debian package version")
 	})
 
 	t.Run("missing control archive", func(t *testing.T) {
-		path := writeArArchive(t, "no-control.deb",
+		_, err := deb.GetMetadata(writeArArchive(t, "no-control.deb",
 			arEntry{"debian-binary", []byte("2.0\n")},
-			arEntry{"data.tar", []byte("not really a tar")})
-
-		_, err := deb.GetMetadata(path)
+			arEntry{"data.tar", []byte("not really a tar")}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to find control archive")
 	})
@@ -191,7 +197,7 @@ type arEntry struct {
 
 // writeArArchive builds a minimal ar archive so the guards that reject a
 // malformed .deb can be exercised without a fixture on disk.
-func writeArArchive(t *testing.T, name string, entries ...arEntry) string {
+func writeArArchive(t *testing.T, name string, entries ...arEntry) (fs.FS, string) {
 	t.Helper()
 
 	var buf bytes.Buffer
@@ -205,8 +211,8 @@ func writeArArchive(t *testing.T, name string, entries ...arEntry) string {
 		}
 	}
 
-	path := filepath.Join(t.TempDir(), name)
-	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0o644))
 
-	return path
+	return os.DirFS(dir), name
 }

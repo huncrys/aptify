@@ -79,7 +79,7 @@ func (b *build) loadExisting() error {
 					return pkg.Compare(existingPkg) == 0
 				}) {
 					if b.reread {
-						if freshPkg, err := deb.GetMetadata(b.poolFilePath(pkg.Filename)); err != nil {
+						if freshPkg, err := deb.GetMetadata(b.poolFile(pkg.Filename)); err != nil {
 							return fmt.Errorf("failed to reread package metadata: %w", err)
 						} else {
 							// The control file carries none of the checksums

@@ -21,9 +21,9 @@ package repo
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	stdtime "time"
 
@@ -67,6 +67,10 @@ type build struct {
 	// The pool path each ingested .deb was copied to, so a file shared by
 	// several components is only copied once.
 	poolPaths map[string]string
+	// The local file each ingested pool path was copied from, so a package
+	// this build just published is read from there rather than fetched back
+	// out of the pool.
+	sourcePaths map[string]string
 	// Every pool path seen while loading and ingesting, which is what the pool
 	// garbage collection considers.
 	candidates map[string]bool
@@ -104,12 +108,13 @@ func Build(opts Options) error {
 		force:          opts.Force,
 		reread:         opts.Reread,
 
-		packages:   make(map[string][]types.Package),
-		added:      make(map[string][]types.Package),
-		removed:    make(map[string][]types.Package),
-		archs:      make(map[string]map[string]bool),
-		poolPaths:  make(map[string]string),
-		candidates: make(map[string]bool),
+		packages:    make(map[string][]types.Package),
+		added:       make(map[string][]types.Package),
+		removed:     make(map[string][]types.Package),
+		archs:       make(map[string]map[string]bool),
+		poolPaths:   make(map[string]string),
+		sourcePaths: make(map[string]string),
+		candidates:  make(map[string]bool),
 	}
 
 	// Load existing state.
@@ -198,10 +203,14 @@ func (b *build) writeSigningKey() error {
 	return nil
 }
 
-// poolFilePath is the local path of a pool file. internal/deb and
-// internal/hashsum still open a package by its own path rather than through
-// the repository's filesystem, so a pool read has to be resolved against the
-// root here.
-func (b *build) poolFilePath(name string) string {
-	return filepath.Join(b.fsys.Name(), filepath.FromSlash(name))
+// poolFile addresses a published package for reading. A .deb this build
+// ingested is read from the local file it was copied from: the pool copy is
+// byte for byte the same, and fetching it back would be a download on remote
+// storage.
+func (b *build) poolFile(poolPath string) (fs.FS, string) {
+	if sourcePath, ok := b.sourcePaths[poolPath]; ok {
+		return repofs.LocalFile(sourcePath)
+	}
+
+	return b.fsys, poolPath
 }

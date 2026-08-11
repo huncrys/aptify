@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"strings"
 
 	"github.com/dpeckett/archivefs/arfs"
@@ -33,12 +32,13 @@ import (
 	"oaklab.hu/debian/deb822/types"
 )
 
-func GetMetadata(path string) (*types.Package, error) {
-	f, err := os.Open(path)
+// GetMetadata reads the control stanza of the package named by fsys and name.
+func GetMetadata(fsys fs.FS, name string) (*types.Package, error) {
+	f, err := openPackage(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open package file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	debFS, err := arfs.Open(f)
 	if err != nil {

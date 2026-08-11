@@ -131,7 +131,7 @@ func (b *build) writeContentsIndice(componentDir, arch string, packages, newPack
 			continue
 		}
 
-		pkgContents, err := deb.GetPackageContents(b.poolFilePath(pkg.Filename))
+		pkgContents, err := deb.GetPackageContents(b.poolFile(pkg.Filename))
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to get package contents: %w %s", err, pkg.Filename)
 		}

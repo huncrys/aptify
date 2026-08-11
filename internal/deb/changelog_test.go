@@ -74,7 +74,9 @@ func TestGetPackageChangelog(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, modTime, err := deb.GetPackageChangelog(tt.source, tt.pkg, fixture(tt.file))
+			fsys, name := fixture(tt.file)
+
+			data, modTime, err := deb.GetPackageChangelog(fsys, name, tt.source, tt.pkg)
 			require.NoError(t, err)
 			require.NotEmpty(t, data)
 
@@ -100,12 +102,12 @@ func TestGetPackageChangelogSymlinkedDocDirectory(t *testing.T) {
 		"hello-world-dbgsym_2.0_arm64.deb",
 	} {
 		t.Run(file, func(t *testing.T) {
-			path := fixture(file)
-
-			info, err := os.Stat(path)
+			info, err := os.Stat(fixturePath(file))
 			require.NoError(t, err)
 
-			data, modTime, err := deb.GetPackageChangelog("hello-world", "hello-world-dbgsym", path)
+			fsys, name := fixture(file)
+
+			data, modTime, err := deb.GetPackageChangelog(fsys, name, "hello-world", "hello-world-dbgsym")
 			require.Error(t, err)
 
 			assert.True(t, errors.Is(err, deb.ErrChangelogSymlink), "got %v", err)
@@ -125,12 +127,12 @@ func TestGetPackageChangelogSymlinkedDocDirectory(t *testing.T) {
 // error that os.IsNotExist reports true for, plus a usable timestamp (the .deb's
 // own mtime), which is what dates the synthetic entry.
 func TestGetPackageChangelogNotFound(t *testing.T) {
-	path := fixture("hello-world_1.0_amd64.deb")
-
-	info, err := os.Stat(path)
+	info, err := os.Stat(fixturePath("hello-world_1.0_amd64.deb"))
 	require.NoError(t, err)
 
-	data, modTime, err := deb.GetPackageChangelog("", "not-a-shipped-name", path)
+	fsys, name := fixture("hello-world_1.0_amd64.deb")
+
+	data, modTime, err := deb.GetPackageChangelog(fsys, name, "", "not-a-shipped-name")
 	require.Error(t, err)
 
 	assert.True(t, os.IsNotExist(err), "got %v", err)
@@ -145,7 +147,9 @@ func TestGetPackageChangelogNotFound(t *testing.T) {
 // is not taken for something that is not a missing changelog.
 func TestGetPackageChangelogErrors(t *testing.T) {
 	t.Run("not a debian package", func(t *testing.T) {
-		_, _, err := deb.GetPackageChangelog("hello-world", "hello-world", fixture("hello-world_1.0.dsc"))
+		fsys, name := fixture("hello-world_1.0.dsc")
+
+		_, _, err := deb.GetPackageChangelog(fsys, name, "hello-world", "hello-world")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to open archive")
 		assert.False(t, os.IsNotExist(err))
@@ -155,26 +159,28 @@ func TestGetPackageChangelogErrors(t *testing.T) {
 	// ships no changelog, so that a vanished pool file gets no placeholder
 	// claiming the version has nothing to report.
 	t.Run("nonexistent file", func(t *testing.T) {
-		_, _, err := deb.GetPackageChangelog("hello-world", "hello-world", fixture("no-such-package_9.9_amd64.deb"))
+		fsys, name := fixture("no-such-package_9.9_amd64.deb")
+
+		_, _, err := deb.GetPackageChangelog(fsys, name, "hello-world", "hello-world")
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, deb.ErrPackageUnreadable), "got %v", err)
 		assert.Contains(t, err.Error(), "package file cannot be opened")
 	})
 
 	t.Run("unsupported package version", func(t *testing.T) {
-		path := writeArArchive(t, "unsupported.deb", arEntry{"debian-binary", []byte("3.0\n")})
+		fsys, name := writeArArchive(t, "unsupported.deb", arEntry{"debian-binary", []byte("3.0\n")})
 
-		_, _, err := deb.GetPackageChangelog("hello-world", "hello-world", path)
+		_, _, err := deb.GetPackageChangelog(fsys, name, "hello-world", "hello-world")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported debian package version")
 	})
 
 	t.Run("missing data archive", func(t *testing.T) {
-		path := writeArArchive(t, "no-data.deb",
+		fsys, name := writeArArchive(t, "no-data.deb",
 			arEntry{"debian-binary", []byte("2.0\n")},
 			arEntry{"control.tar", []byte("not really a tar")})
 
-		_, _, err := deb.GetPackageChangelog("hello-world", "hello-world", path)
+		_, _, err := deb.GetPackageChangelog(fsys, name, "hello-world", "hello-world")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to find data archive")
 	})

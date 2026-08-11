@@ -106,19 +106,16 @@ func TestGetPackageContentsErrors(t *testing.T) {
 	})
 
 	t.Run("unsupported package version", func(t *testing.T) {
-		path := writeArArchive(t, "unsupported.deb", arEntry{"debian-binary", []byte("3.0\n")})
-
-		_, err := deb.GetPackageContents(path)
+		_, err := deb.GetPackageContents(writeArArchive(t, "unsupported.deb",
+			arEntry{"debian-binary", []byte("3.0\n")}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported debian package version")
 	})
 
 	t.Run("missing data archive", func(t *testing.T) {
-		path := writeArArchive(t, "no-data.deb",
+		_, err := deb.GetPackageContents(writeArArchive(t, "no-data.deb",
 			arEntry{"debian-binary", []byte("2.0\n")},
-			arEntry{"control.tar", []byte("not really a tar")})
-
-		_, err := deb.GetPackageContents(path)
+			arEntry{"control.tar", []byte("not really a tar")}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to find data archive")
 	})

@@ -216,7 +216,7 @@ func (b *build) backfillPackageDigests() (map[string]bool, error) {
 			sums, ok := sumsForPoolPath[pkg.Filename]
 			if !ok {
 				var err error
-				sums, err = hashsum.File(b.fsys, pkg.Filename)
+				sums, err = hashsum.File(b.poolFile(pkg.Filename))
 				if errors.Is(err, fs.ErrNotExist) {
 					// A repository missing a pool file builds today, so this
 					// stays a warning: the stanza keeps the checksums it has.

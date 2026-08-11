@@ -48,7 +48,7 @@ func (b *build) ingest() error {
 				}
 
 				for _, pkgPath := range matches {
-					pkg, err := deb.GetMetadata(pkgPath)
+					pkg, err := deb.GetMetadata(repofs.LocalFile(pkgPath))
 					if err != nil {
 						return fmt.Errorf("failed to get package metadata: %w", err)
 					}
@@ -127,6 +127,7 @@ func (b *build) ingest() error {
 						pkg.Filename = existingPoolPath
 					}
 					b.candidates[pkg.Filename] = true
+					b.sourcePaths[pkg.Filename] = pkgPath
 
 					b.packages[releaseComponent] = append(b.packages[releaseComponent], *pkg)
 					b.added[releaseComponent] = append(b.added[releaseComponent], *pkg)

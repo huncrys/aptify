@@ -44,6 +44,48 @@ aptify build -c examples/demo.yaml -d ./demo-repo
 
 This will create a directory called `demo-repo` containing the repository.
 
+### Publish to S3
+
+`-d` also takes an `s3://bucket/prefix` URL, and the repository is then built
+directly in the bucket. The repository itself is the state store either way, so
+no local copy is needed: a build reads back the indices it published last time,
+uploads what changed and leaves the rest alone.
+
+```shell
+aptify build -c examples/demo.yaml -d s3://apt.example.com/debian
+aptify inspect -d s3://apt.example.com/debian
+```
+
+Credentials, region and endpoint come from the standard AWS chain, so anything
+that configures the AWS CLI configures aptify: `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, `AWS_REGION`, an instance role, or
+`~/.aws/config`. A bucket that is not Amazon's - Garage, SeaweedFS, Ceph
+(RadosGW), RustFS - is addressed by setting `AWS_ENDPOINT_URL`:
+
+```shell
+export AWS_ENDPOINT_URL=https://s3.example.com
+aptify build -c examples/demo.yaml -d s3://apt/debian
+```
+
+A custom endpoint switches bucket addressing to path style, which is what
+self-hosted implementations usually expect. Override it either way with the
+`path_style` query parameter: `-d 's3://bucket/debian?path_style=false'`.
+
+Modification times are preserved the way rclone and s3cmd preserve them, in the
+`mtime` object metadata (`X-Amz-Meta-Mtime`) as Unix seconds with an optional
+nanosecond fraction, since S3's own `LastModified` records the upload rather
+than the content. That is what keeps a mirror, and the by-hash retention
+window, from seeing every rebuild as a change.
+
+Two things to know before pointing a pipeline at it:
+
+- Two builds must not run against one bucket at the same time. There is no
+  locking, and the same is true of a local directory today.
+- `--reread`, and the one-off backfill of a repository published by an older
+  aptify, read the pool: those download every `.deb` they touch. An ordinary
+  build never does - a package it just ingested is read from the local file it
+  was uploaded from.
+
 ### Serve Repository
 
 The recommended way to serve the repository is to use [caddy](https://caddyserver.com).

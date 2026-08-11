@@ -112,7 +112,7 @@ func main() {
 					&cli.StringFlag{
 						Name:    "repository-dir",
 						Aliases: []string{"d"},
-						Usage:   "Directory to store the repository",
+						Usage:   "Directory to store the repository, or an s3://bucket/prefix URL",
 						Value:   "repository",
 					},
 					&cli.BoolFlag{
@@ -134,10 +134,15 @@ func main() {
 
 					slog.Info("Building repository", slog.String("dir", repoDir))
 
+					fsys, err := repofs.New(ctx, repoDir)
+					if err != nil {
+						return err
+					}
+
 					privateKeyPath := filepath.Join(cmd.String("config-dir"), "aptify_private.asc")
 
 					return repo.Build(repo.Options{
-						FS:             repofs.NewOS(repoDir),
+						FS:             fsys,
 						ConfigPath:     cmd.String("config"),
 						PrivateKeyPath: privateKeyPath,
 						Force:          cmd.Bool("force"),
@@ -152,15 +157,18 @@ func main() {
 					&cli.StringFlag{
 						Name:    "repository-dir",
 						Aliases: []string{"d"},
-						Usage:   "Directory containing the repository",
+						Usage:   "Directory containing the repository, or an s3://bucket/prefix URL",
 						Value:   "repository",
 					},
 				},
 				Before: util.BeforeAll(initLogger),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					repoDir := cmd.String("repository-dir")
+					fsys, err := repofs.New(ctx, cmd.String("repository-dir"))
+					if err != nil {
+						return err
+					}
 
-					return repo.Inspect(repofs.NewOS(repoDir), os.Stdout)
+					return repo.Inspect(fsys, os.Stdout)
 				},
 			},
 		},

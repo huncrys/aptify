@@ -37,6 +37,8 @@ type osFS struct {
 	root string
 }
 
+var _ FS = (*osFS)(nil)
+
 // NewOS is the repository stored in a local directory. The directory does not
 // have to exist yet.
 func NewOS(root string) FS {

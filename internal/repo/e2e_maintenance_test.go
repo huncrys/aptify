@@ -232,7 +232,7 @@ func stripDigestFields(t *testing.T, repoDir, archDir string) {
 
 	fsys := repofs.NewOS(repoDir)
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
-		_, err := writeIndiceFile(fsys, path.Join(archDir, name), body.Bytes())
+		_, _, err := writeIndiceFile(fsys, path.Join(archDir, name), body.Bytes())
 		require.NoError(t, err)
 	}
 }

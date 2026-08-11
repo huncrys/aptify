@@ -28,12 +28,6 @@ import (
 	"oaklab.hu/debian/deb822/types/list"
 )
 
-// releaseIndiceGlobs is the glob list aptify hashes a release directory with.
-// It is a copy of the list in internal/repo/release.go, which is the source of
-// truth and has to be kept in sync by hand: importing it here would be an
-// import cycle, as repo imports this package.
-var releaseIndiceGlobs = []string{"*/binary-*/Packages*", "*/binary-*/Release", "*/Contents-*"}
-
 // TestFile pins the digests against published test vectors, so that no
 // algorithm can quietly end up describing something else.
 func TestFile(t *testing.T) {
@@ -71,70 +65,24 @@ func TestFile(t *testing.T) {
 	}
 }
 
-// TestDirectory covers which files a release directory publishes checksums
-// for. The exclusions are the load bearing part: a by-hash entry is a hard
-// link to a file listed under its own name, and a temporary belongs to a build
-// that has not published anything yet.
-func TestDirectory(t *testing.T) {
+// TestBytes checks that hashing a body in memory and reading the same body
+// back off a file describe it identically: an index is published by the first
+// and verified by the second.
+func TestBytes(t *testing.T) {
 	dir := t.TempDir()
 
-	files := []string{
-		// Listed.
-		"main/binary-amd64/Packages",
-		"main/binary-amd64/Packages.gz",
-		"main/binary-amd64/Packages.xz",
-		"main/binary-amd64/Release",
-		"main/Contents-amd64",
-		"main/Contents-amd64.gz",
-		// Not listed.
-		"Release",
-		"Release.gpg",
-		"InRelease",
-		"main/binary-amd64/.Packages.12345",
-		"main/binary-amd64/by-hash/SHA256/cafebabe",
-		"main/by-hash/SHA256/deadbeef",
-		"main/binary-amd64/Release.gpg",
-		"pool/main/h/hello/hello_1.0_amd64.deb",
+	body := []byte("Package: hello-world\n")
+	if err := os.WriteFile(filepath.Join(dir, "Packages"), body, 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	for _, name := range files {
-		path := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(name), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	sums, err := Directory(os.DirFS(dir), ".", releaseIndiceGlobs)
+	fromFile, err := File(os.DirFS(dir), "Packages")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var got []string
-	for _, s := range sums {
-		got = append(got, s.Path)
-	}
-	slices.Sort(got)
-
-	want := []string{
-		"main/Contents-amd64",
-		"main/Contents-amd64.gz",
-		"main/binary-amd64/Packages",
-		"main/binary-amd64/Packages.gz",
-		"main/binary-amd64/Packages.xz",
-		"main/binary-amd64/Release",
-	}
-
-	if !slices.Equal(got, want) {
-		t.Errorf("hashed files:\n got %q\nwant %q", got, want)
-	}
-
-	for _, s := range sums {
-		if s.Size != int64(len(s.Path)) || s.MD5 == "" || s.SHA1 == "" || s.SHA256 == "" {
-			t.Errorf("incomplete sums for %s: %+v", s.Path, s)
-		}
+	if got := Bytes("Packages", body); got != fromFile {
+		t.Errorf("got %+v, want %+v", got, fromFile)
 	}
 }
 

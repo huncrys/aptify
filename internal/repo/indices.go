@@ -31,6 +31,7 @@ import (
 	stdtime "time"
 
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
+	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/types"
@@ -46,6 +47,19 @@ func (b *build) writeIndices() error {
 		var architectures []arch.Arch
 
 		modified := false
+
+		releaseDir := path.Join("dists", releaseConf.Name)
+
+		// The checksums of every indice this build published, keyed the way a
+		// Release file names them: relative to the release directory. They are
+		// what spares the release assembly a second read of each index.
+		published := make(map[string]hashsum.Sums)
+		collect := func(sums ...hashsum.Sums) {
+			for _, s := range sums {
+				s.Path = relativeName(releaseDir, s.Path)
+				published[s.Path] = s
+			}
+		}
 
 		for _, componentConf := range releaseConf.Components {
 			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
@@ -85,12 +99,13 @@ func (b *build) writeIndices() error {
 				// The stub is rendered and compared on every build rather than
 				// gated on the incremental skip below, so a repository
 				// published before it existed heals itself.
-				stubWritten, err := writeComponentReleaseFile(b.fsys, archDir, releaseConf,
+				stubSums, stubWritten, err := writeComponentReleaseFile(b.fsys, archDir, releaseConf,
 					componentConf.Name, architecture, b.conf.ByHashEnabled())
 				if err != nil {
 					return fmt.Errorf("failed to write component Release file: %w", err)
 				}
 				modified = modified || stubWritten
+				collect(stubSums)
 
 				packages := filterForArch(b.packages[releaseComponent], architecture)
 				newPackages := filterForArch(b.added[releaseComponent], architecture)
@@ -128,11 +143,12 @@ func (b *build) writeIndices() error {
 				})
 
 				if writePackages {
-					changed, err := writePackagesIndice(b.fsys, archDir, packages)
+					sums, changed, err := writePackagesIndice(b.fsys, archDir, packages)
 					if err != nil {
 						return fmt.Errorf("failed to write package lists: %w", err)
 					}
 					modified = modified || changed
+					collect(sums...)
 				} else {
 					slog.Info("Skipping Packages indice generation, no new or removed packages found",
 						slog.String("dir", archDir),
@@ -147,12 +163,13 @@ func (b *build) writeIndices() error {
 					continue
 				}
 
-				changed, err := b.writeContentsIndice(componentDir, architecture,
+				sums, changed, err := b.writeContentsIndice(componentDir, architecture,
 					packages, newPackages, removedPackages)
 				if err != nil {
 					return fmt.Errorf("failed to write Contents file: %w", err)
 				}
 				modified = modified || changed
+				collect(sums...)
 			}
 		}
 
@@ -163,13 +180,11 @@ func (b *build) writeIndices() error {
 		})
 		architectures = slices.Compact(architectures)
 
-		releaseDir := path.Join("dists", releaseConf.Name)
-
 		if err := b.fsys.MkdirAll(releaseDir); err != nil {
 			return fmt.Errorf("failed to create release directory: %w", err)
 		}
 
-		if err := writeReleaseFile(b.fsys, releaseDir, modified, b.conf, releaseConf, architectures, b.privateKey); err != nil {
+		if err := b.writeReleaseFile(releaseDir, releaseConf, architectures, modified, published); err != nil {
 			return fmt.Errorf("failed to write release: %w", err)
 		}
 	}
@@ -192,34 +207,39 @@ func filterForArch(pkgs []types.Package, architecture string) []types.Package {
 }
 
 // writePackagesIndice writes every published variant of the Packages indice,
-// reporting whether any of them changed.
-func writePackagesIndice(fsys repofs.FS, archDir string, packages []types.Package) (bool, error) {
+// reporting their checksums and whether any of them changed.
+func writePackagesIndice(fsys repofs.FS, archDir string, packages []types.Package) ([]hashsum.Sums, bool, error) {
 	slog.Info("Writing Packages indice",
 		slog.String("dir", archDir), slog.Int("count", len(packages)))
 
 	var packageList bytes.Buffer
 	if err := deb822.Marshal(&packageList, packages); err != nil {
-		return false, fmt.Errorf("failed to marshal packages: %w", err)
+		return nil, false, fmt.Errorf("failed to marshal packages: %w", err)
 	}
 
-	var changed bool
+	var (
+		sums    []hashsum.Sums
+		changed bool
+	)
+
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
-		fileChanged, err := writeIndiceFile(fsys, path.Join(archDir, name), packageList.Bytes())
+		fileSums, fileChanged, err := writeIndiceFile(fsys, path.Join(archDir, name), packageList.Bytes())
 		if err != nil {
-			return changed, fmt.Errorf("failed to write Packages file: %w", err)
+			return sums, changed, fmt.Errorf("failed to write Packages file: %w", err)
 		}
 
+		sums = append(sums, fileSums)
 		changed = changed || fileChanged
 	}
 
-	return changed, nil
+	return sums, changed, nil
 }
 
 // writeComponentReleaseFile publishes the per component, per architecture
 // Release stub apt reads alongside the indices in the directory. It is
 // rendered and compared on every build rather than gated on the incremental
 // skip logic, so a repository published before the stub existed heals itself.
-func writeComponentReleaseFile(fsys repofs.FS, archDir string, releaseConf v1alpha1.ReleaseConfig, component, architecture string, byHash bool) (bool, error) {
+func writeComponentReleaseFile(fsys repofs.FS, archDir string, releaseConf v1alpha1.ReleaseConfig, component, architecture string, byHash bool) (hashsum.Sums, bool, error) {
 	// Archive names the suite the directory belongs to; a release that does
 	// not configure one is only ever addressed by its codename.
 	archive := releaseConf.Suite
@@ -243,21 +263,21 @@ func writeComponentReleaseFile(fsys repofs.FS, archDir string, releaseConf v1alp
 
 	var body bytes.Buffer
 	if err := deb822.Marshal(&body, stub); err != nil {
-		return false, fmt.Errorf("failed to marshal component release: %w", err)
+		return hashsum.Sums{}, false, fmt.Errorf("failed to marshal component release: %w", err)
 	}
 
 	name := path.Join(archDir, "Release")
 	if existing, err := fs.ReadFile(fsys, name); err == nil && bytes.Equal(existing, body.Bytes()) {
-		return false, nil
+		return hashsum.Bytes(name, existing), false, nil
 	}
 
 	slog.Info("Writing component Release file", slog.String("dir", archDir))
 
 	if err := fsys.WriteFile(name, body.Bytes(), 0o644, stdtime.Time{}); err != nil {
-		return false, fmt.Errorf("failed to write component Release file: %w", err)
+		return hashsum.Sums{}, false, fmt.Errorf("failed to write component Release file: %w", err)
 	}
 
-	return true, nil
+	return hashsum.Bytes(name, body.Bytes()), true, nil
 }
 
 // removeArchIndices deletes every indice published for an architecture,

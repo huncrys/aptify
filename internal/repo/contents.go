@@ -32,6 +32,7 @@ import (
 
 	"github.com/dpeckett/uncompr"
 	"oaklab.hu/debian/aptify/internal/deb"
+	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
@@ -75,18 +76,19 @@ func contentsIndiceNames(arch string) []string {
 }
 
 // writeContentsIndice rewrites the Contents indice for an architecture,
-// reporting whether any published variant changed. packages is everything the
-// architecture publishes, newPackages and removedPackages what this build
-// added and dropped; --reread forces every package to be read back from the
-// pool rather than only those whose published contents can have changed.
-func (b *build) writeContentsIndice(componentDir, arch string, packages, newPackages, removedPackages []types.Package) (bool, error) {
+// reporting the checksums of every published variant and whether any of them
+// changed. packages is everything the architecture publishes, newPackages and
+// removedPackages what this build added and dropped; --reread forces every
+// package to be read back from the pool rather than only those whose published
+// contents can have changed.
+func (b *build) writeContentsIndice(componentDir, arch string, packages, newPackages, removedPackages []types.Package) ([]hashsum.Sums, bool, error) {
 	contentsPath := path.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
 
 	// Paths shipped by each qualified package name, seeded with whatever the
 	// existing indice holds for the packages we are not rewriting.
 	packageFiles, err := readContentsIndice(b.fsys, contentsPath)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 
 	// Contents has no version column, so a name can be described only once.
@@ -131,7 +133,7 @@ func (b *build) writeContentsIndice(componentDir, arch string, packages, newPack
 
 		pkgContents, err := deb.GetPackageContents(b.poolFilePath(pkg.Filename))
 		if err != nil {
-			return false, fmt.Errorf("failed to get package contents: %w %s", err, pkg.Filename)
+			return nil, false, fmt.Errorf("failed to get package contents: %w %s", err, pkg.Filename)
 		}
 
 		// Drop the package's previous entries, whatever section it was filed
@@ -172,21 +174,26 @@ func (b *build) writeContentsIndice(componentDir, arch string, packages, newPack
 		sort.Strings(packages)
 
 		if err := cw.Write(contents.Entry{Path: filePath, Packages: packages}); err != nil {
-			return false, fmt.Errorf("failed to write contents: %w", err)
+			return nil, false, fmt.Errorf("failed to write contents: %w", err)
 		}
 	}
 
-	var changed bool
+	var (
+		sums    []hashsum.Sums
+		changed bool
+	)
+
 	for _, name := range contentsIndiceNames(arch) {
-		fileChanged, err := writeIndiceFile(b.fsys, path.Join(componentDir, name), contentsList.Bytes())
+		fileSums, fileChanged, err := writeIndiceFile(b.fsys, path.Join(componentDir, name), contentsList.Bytes())
 		if err != nil {
-			return changed, fmt.Errorf("failed to write Contents file: %w", err)
+			return sums, changed, fmt.Errorf("failed to write Contents file: %w", err)
 		}
 
+		sums = append(sums, fileSums)
 		changed = changed || fileChanged
 	}
 
-	return changed, nil
+	return sums, changed, nil
 }
 
 // readContentsIndice reads an existing Contents indice into the set of paths

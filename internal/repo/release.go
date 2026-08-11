@@ -23,6 +23,7 @@ import (
 	"crypto"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -69,7 +70,13 @@ func readReleaseFile(fsys repofs.FS, releaseDir string, privateKey *openpgp.Enti
 	return &release, nil
 }
 
-func writeReleaseFile(fsys repofs.FS, releaseDir string, modified bool, conf *v1alpha1.Repository, releaseConf v1alpha1.ReleaseConfig, architectures []arch.Arch, privateKey *openpgp.Entity) error {
+// writeReleaseFile publishes the release stanza naming every indice of the
+// release. published holds the checksums of the indices this build wrote or
+// compared, keyed relative to the release directory; anything it does not
+// cover is taken from the release being replaced, or hashed off the storage.
+func (b *build) writeReleaseFile(releaseDir string, releaseConf v1alpha1.ReleaseConfig, architectures []arch.Arch, modified bool, publishedSums map[string]hashsum.Sums) error {
+	fsys, conf, privateKey := b.fsys, b.conf, b.privateKey
+
 	var components []string
 	for _, component := range releaseConf.Components {
 		components = append(components, component.Name)
@@ -161,7 +168,7 @@ func writeReleaseFile(fsys repofs.FS, releaseDir string, modified bool, conf *v1
 
 	slog.Info("Writing Release file", slog.String("dir", releaseDir))
 
-	sums, err := hashsum.Directory(fsys, releaseDir, releaseIndiceGlobs)
+	sums, err := releaseSums(fsys, releaseDir, publishedSums, existing, b.force)
 	if err != nil {
 		return fmt.Errorf("failed to hash release: %w", err)
 	}
@@ -235,6 +242,115 @@ func writeReleaseFile(fsys repofs.FS, releaseDir string, modified bool, conf *v1
 	}
 
 	return pruneByHash(fsys, releaseDir, current, previous, conf.ByHashRetention())
+}
+
+// releaseSums are the checksums a Release file publishes, one entry per indice
+// the release names.
+//
+// The file list is globbed off the storage, so it describes what is actually
+// published; only the checksums are taken from elsewhere. Each one comes from
+// the cheapest source that describes the very bytes on the storage: what this
+// build wrote or compared, else what the release being replaced recorded for a
+// file this build did not touch, else a read. --force takes the last route for
+// everything, which is the way out if the published bytes are suspect.
+func releaseSums(fsys repofs.FS, releaseDir string, published map[string]hashsum.Sums, existing *types.Release, force bool) ([]hashsum.Sums, error) {
+	names, err := releaseIndiceNames(fsys, releaseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	recorded := recordedSums(existing)
+
+	sums := make([]hashsum.Sums, 0, len(names))
+	for _, name := range names {
+		if !force {
+			if s, ok := published[name]; ok {
+				sums = append(sums, s)
+
+				continue
+			}
+
+			if s, ok := recorded[name]; ok {
+				sums = append(sums, s)
+
+				continue
+			}
+		}
+
+		s, err := hashsum.File(fsys, path.Join(releaseDir, name))
+		if err != nil {
+			return nil, err
+		}
+		s.Path = name
+
+		sums = append(sums, s)
+	}
+
+	return sums, nil
+}
+
+// releaseIndiceNames lists the indices of a release, relative to its directory
+// and in the order the Release file lists them.
+func releaseIndiceNames(fsys repofs.FS, releaseDir string) ([]string, error) {
+	var names []string
+
+	seen := make(map[string]bool)
+	for _, glob := range releaseIndiceGlobs {
+		matches, err := fsys.Glob(path.Join(releaseDir, glob))
+		if err != nil {
+			return nil, fmt.Errorf("failed to find release indices: %w", err)
+		}
+
+		for _, match := range matches {
+			name := relativeName(releaseDir, match)
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+
+			names = append(names, name)
+		}
+	}
+
+	slices.Sort(names)
+
+	return names, nil
+}
+
+// recordedSums are the checksums a release file records, keyed by file name. A
+// file is only taken from it when all three algorithms describe it at the same
+// size: a release published by an older aptify carries fewer, and a stanza
+// that disagrees with itself is not a source of anything.
+func recordedSums(release *types.Release) map[string]hashsum.Sums {
+	if release == nil {
+		return nil
+	}
+
+	sums := make(map[string]hashsum.Sums, len(release.SHA256))
+
+	for _, hash := range release.SHA256 {
+		sums[hash.Filename] = hashsum.Sums{Path: hash.Filename, Size: hash.Size, SHA256: hash.Hash}
+	}
+
+	for _, hash := range release.MD5Sum {
+		if s, ok := sums[hash.Filename]; ok && s.Size == hash.Size {
+			s.MD5 = hash.Hash
+			sums[hash.Filename] = s
+		}
+	}
+
+	for _, hash := range release.SHA1 {
+		if s, ok := sums[hash.Filename]; ok && s.Size == hash.Size {
+			s.SHA1 = hash.Hash
+			sums[hash.Filename] = s
+		}
+	}
+
+	maps.DeleteFunc(sums, func(_ string, s hashsum.Sums) bool {
+		return s.MD5 == "" || s.SHA1 == "" || s.SHA256 == ""
+	})
+
+	return sums
 }
 
 // noSupportForArchitectureAll returns the value of the Release field of the

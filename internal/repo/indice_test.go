@@ -25,6 +25,7 @@ import (
 	"testing"
 	stdtime "time"
 
+	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/repofs"
 )
 
@@ -41,7 +42,7 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 
 			body := []byte("Package: hello-world\n")
 
-			changed, err := writeIndiceFile(fsys, name, body)
+			written, changed, err := writeIndiceFile(fsys, name, body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,12 +67,19 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			changed, err = writeIndiceFile(fsys, name, body)
+			unchanged, changed, err := writeIndiceFile(fsys, name, body)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if changed {
 				t.Error("rewriting the same body reported a change")
+			}
+
+			// The checksums describe the published file whether it was written
+			// or only compared, which is what the Release file is assembled
+			// from.
+			if unchanged != written {
+				t.Errorf("checksums of the unchanged indice: got %+v, want %+v", unchanged, written)
 			}
 
 			fi, err := os.Stat(path)
@@ -82,7 +90,8 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 				t.Errorf("modification time: got %s, want %s", fi.ModTime(), modTime)
 			}
 
-			changed, err = writeIndiceFile(fsys, name, []byte("Package: hello-world\nVersion: 2.0\n"))
+			rewrittenSums, changed, err := writeIndiceFile(fsys, name,
+				[]byte("Package: hello-world\nVersion: 2.0\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -96,6 +105,10 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 			}
 			if bytes.Equal(rewritten, published) {
 				t.Error("the indice was not rewritten")
+			}
+
+			if want := hashsum.Bytes(name, rewritten); rewrittenSums != want {
+				t.Errorf("checksums of the rewritten indice: got %+v, want %+v", rewrittenSums, want)
 			}
 
 			// The link still holds what it was published as, which is what a
@@ -117,7 +130,7 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 func TestWriteIndiceFileLeavesNoTemporaries(t *testing.T) {
 	dir := t.TempDir()
 
-	if _, err := writeIndiceFile(repofs.NewOS(dir), "Packages", []byte("Package: hello-world\n")); err != nil {
+	if _, _, err := writeIndiceFile(repofs.NewOS(dir), "Packages", []byte("Package: hello-world\n")); err != nil {
 		t.Fatal(err)
 	}
 

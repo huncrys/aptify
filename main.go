@@ -294,19 +294,9 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 					archsForReleaseComponent[releaseComponent] = make(map[string]bool)
 				}
 
-				reader, err := os.Open(packagesFile)
+				packages, err := readPackagesFile(packagesFile)
 				if err != nil {
-					return fmt.Errorf("failed to open Packages file: %w", err)
-				}
-				defer reader.Close()
-				decoder, err := deb822.NewDecoder(reader, nil)
-				if err != nil {
-					return fmt.Errorf("failed to create decoder for Packages file: %w", err)
-				}
-
-				var packages []types.Package
-				if err := decoder.Decode(&packages); err != nil {
-					return fmt.Errorf("failed to decode Packages file: %w", err)
+					return err
 				}
 
 				packagesForReleaseComponent[releaseComponent] = append(packagesForReleaseComponent[releaseComponent], packages...)
@@ -689,7 +679,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 		}
 
 		changelogDir := filepath.Join(repoDir, "changelogs")
-		filepath.WalkDir(changelogDir, func(changelogFile string, d os.DirEntry, err error) error {
+		if err := filepath.WalkDir(changelogDir, func(changelogFile string, d os.DirEntry, err error) error {
 			if err != nil {
 				return fmt.Errorf("failed to find changelog files: %w", err)
 			}
@@ -712,7 +702,9 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 			}
 
 			return nil
-		})
+		}); err != nil {
+			return fmt.Errorf("failed to prune changelog files: %w", err)
+		}
 	}
 
 	// Save a copy of the signing key.
@@ -759,7 +751,9 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 	}
 
 	if stat, err := os.Stat(privateKeyPath); err == nil {
-		os.Chtimes(signingKeyFilePath, stdtime.Time{}, stat.ModTime())
+		if err := os.Chtimes(signingKeyFilePath, stdtime.Time{}, stat.ModTime()); err != nil {
+			return fmt.Errorf("failed to set signing key file modification time: %w", err)
+		}
 	}
 
 	return nil
@@ -1747,12 +1741,6 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 				return nil, fmt.Errorf("failed to create changelog subdirectory: %w", err)
 			}
 
-			changelogFile, err := os.Create(changelogPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create changelog file: %w", err)
-			}
-			defer changelogFile.Close()
-
 			if err := os.WriteFile(changelogPath, changelogData, 0o644); err != nil {
 				return nil, fmt.Errorf("failed to write changelog file: %w", err)
 			}
@@ -1869,19 +1857,9 @@ func inspectRepository(repoDir string) error {
 	var packages []types.Package
 
 	for _, file := range files {
-		reader, err := os.Open(file)
+		candidates, err := readPackagesFile(file)
 		if err != nil {
-			return fmt.Errorf("failed to open Packages file: %w", err)
-		}
-		defer reader.Close()
-		decoder, err := deb822.NewDecoder(reader, nil)
-		if err != nil {
-			return fmt.Errorf("failed to create decoder for Packages file: %w", err)
-		}
-
-		var candidates []types.Package
-		if err := decoder.Decode(&candidates); err != nil {
-			return fmt.Errorf("failed to decode Packages file: %w", err)
+			return err
 		}
 
 		for _, candidate := range candidates {
@@ -1895,7 +1873,32 @@ func inspectRepository(repoDir string) error {
 		}
 	}
 
-	json.NewEncoder(os.Stdout).Encode(packages)
+	if err := json.NewEncoder(os.Stdout).Encode(packages); err != nil {
+		return fmt.Errorf("failed to encode packages: %w", err)
+	}
 
 	return nil
+}
+
+// readPackagesFile decodes a single Packages indice, closing the file before
+// returning so that a caller iterating over many of them does not accumulate
+// open handles.
+func readPackagesFile(path string) ([]types.Package, error) {
+	reader, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open Packages file: %w", err)
+	}
+	defer reader.Close()
+
+	decoder, err := deb822.NewDecoder(reader, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create decoder for Packages file: %w", err)
+	}
+
+	var packages []types.Package
+	if err := decoder.Decode(&packages); err != nil {
+		return nil, fmt.Errorf("failed to decode Packages file: %w", err)
+	}
+
+	return packages, nil
 }

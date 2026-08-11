@@ -29,6 +29,9 @@ import (
 )
 
 // releaseIndiceGlobs is the glob list aptify hashes a release directory with.
+// It is a copy of the list in internal/repo/release.go, which is the source of
+// truth and has to be kept in sync by hand: importing it here would be an
+// import cycle, as repo imports this package.
 var releaseIndiceGlobs = []string{"*/binary-*/Packages*", "*/binary-*/Release", "*/Contents-*"}
 
 // TestFile pins the digests against published test vectors, so that no

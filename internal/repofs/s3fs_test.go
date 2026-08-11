@@ -77,6 +77,77 @@ func TestS3WriteFromStreams(t *testing.T) {
 	assert.True(t, fi.ModTime().Equal(mtime), "got %s, want %s", fi.ModTime(), mtime)
 }
 
+// TestS3WriteFromSplitsLargeFiles pins how a pool package too big for one
+// request is published: a single PUT is capped at 5 GiB, so a large stream is
+// uploaded in parts, and a small one still costs a single request.
+func TestS3WriteFromSplitsLargeFiles(t *testing.T) {
+	backend := newTestBackend(t)
+	client := &multipartCountingClient{S3API: backend.client}
+	fsys := repofs.NewS3(context.Background(), client, backend.bucket, "")
+
+	mtime := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+	small := bytes.Repeat([]byte("deb"), 4096)
+	require.NoError(t, fsys.WriteFrom("pool/main/h/hello/hello_1.0_amd64.deb",
+		bytes.NewReader(small), int64(len(small)), mtime))
+	assert.Zero(t, client.multipart, "a small publish was split across a multipart upload")
+
+	// Over the transfer manager's multipart threshold, which is what a package
+	// too large for one request looks like in miniature.
+	large := bytes.Repeat([]byte("deb"), 6*1024*1024)
+	require.NoError(t, fsys.WriteFrom("pool/main/h/hello/hello_2.0_amd64.deb",
+		bytes.NewReader(large), int64(len(large)), mtime))
+	assert.Positive(t, client.multipart, "a large publish was not split across a multipart upload")
+
+	published, err := fs.ReadFile(fsys, "pool/main/h/hello/hello_2.0_amd64.deb")
+	require.NoError(t, err)
+	assert.Len(t, published, len(large))
+	assert.True(t, bytes.Equal(large, published), "the parts were not reassembled into the package")
+
+	// The mtime convention has to survive the split as well: it is what keeps a
+	// rebuild from churning a mirror.
+	fi, err := fsys.Stat("pool/main/h/hello/hello_2.0_amd64.deb")
+	require.NoError(t, err)
+	assert.True(t, fi.ModTime().Equal(mtime), "got %s, want %s", fi.ModTime(), mtime)
+
+	// The transfer manager's checksum setting overrides the client's, so the
+	// relaxation every other request is made with has to hold here too: not
+	// every S3 implementation understands those headers.
+	assert.Empty(t, client.checksums, "a publish asked for a checksum the client was configured not to send")
+}
+
+// multipartCountingClient records the multipart uploads a publish starts, which
+// is the only way to tell one from a plain PUT after the fact, and the checksum
+// algorithms it asks for along the way.
+type multipartCountingClient struct {
+	repofs.S3API
+
+	multipart int
+	checksums []string
+}
+
+func (c *multipartCountingClient) PutObject(ctx context.Context, in *s3.PutObjectInput,
+	opts ...func(*s3.Options),
+) (*s3.PutObjectOutput, error) {
+	if in.ChecksumAlgorithm != "" {
+		c.checksums = append(c.checksums, string(in.ChecksumAlgorithm))
+	}
+
+	return c.S3API.PutObject(ctx, in, opts...)
+}
+
+func (c *multipartCountingClient) CreateMultipartUpload(ctx context.Context, in *s3.CreateMultipartUploadInput,
+	opts ...func(*s3.Options),
+) (*s3.CreateMultipartUploadOutput, error) {
+	c.multipart++
+
+	if in.ChecksumAlgorithm != "" {
+		c.checksums = append(c.checksums, string(in.ChecksumAlgorithm))
+	}
+
+	return c.S3API.CreateMultipartUpload(ctx, in, opts...)
+}
+
 // TestS3MissingObjectsAreNotExist pins the mapping the pipeline branches on:
 // an object that is not there has to look like a file that is not there, or an
 // empty repository reads as a broken one.

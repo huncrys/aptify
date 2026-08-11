@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -42,7 +43,10 @@ import (
 const deleteBatchSize = 1000
 
 // S3API is the part of the S3 client a repository uses. Taking it as an
-// interface is what lets the backend be driven by a fake.
+// interface is what lets the backend be driven by a fake. The multipart
+// operations are here for the transfer manager a pool package is streamed
+// through, and are what makes the interface satisfy
+// transfermanager.S3APIClient.
 type S3API interface {
 	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
@@ -51,15 +55,20 @@ type S3API interface {
 	DeleteObject(context.Context, *s3.DeleteObjectInput, ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	DeleteObjects(context.Context, *s3.DeleteObjectsInput, ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
 	ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+
+	CreateMultipartUpload(context.Context, *s3.CreateMultipartUploadInput, ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error)
+	UploadPart(context.Context, *s3.UploadPartInput, ...func(*s3.Options)) (*s3.UploadPartOutput, error)
+	CompleteMultipartUpload(context.Context, *s3.CompleteMultipartUploadInput, ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error)
+	AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error)
 }
 
 // s3FS is a repository published to an S3 bucket, optionally below a key
 // prefix. There are no directories: a name is a key, and what a walk sees as a
 // directory is a set of keys sharing a prefix.
 //
-// Every publish is a single PUT, which is atomic per key, so the dot-prefixed
-// temporary a local write goes through has no counterpart here: a failed PUT
-// publishes nothing.
+// Every publish is atomic per key - a PUT, or a multipart upload that becomes
+// visible only once it completes - so the dot-prefixed temporary a local write
+// goes through has no counterpart here: a failed publish publishes nothing.
 type s3FS struct {
 	client S3API
 	bucket string
@@ -267,8 +276,40 @@ func (s *s3FS) WriteFile(name string, body []byte, _ fs.FileMode, mtime time.Tim
 	return s.put(name, bytes.NewReader(body), int64(len(body)), mtime)
 }
 
-func (s *s3FS) WriteFrom(name string, r io.Reader, size int64, mtime time.Time) error {
-	return s.put(name, r, size, mtime)
+// WriteFrom publishes a pool package. A single PUT is capped at 5 GiB, so the
+// stream goes through the transfer manager, which splits anything over its
+// multipart threshold across parts and publishes the rest as one PUT. The size
+// is not needed: the transfer manager measures the stream as it reads it.
+func (s *s3FS) WriteFrom(name string, r io.Reader, _ int64, mtime time.Time) error {
+	key, err := s.key(name)
+	if err != nil {
+		return err
+	}
+
+	input := &transfermanager.UploadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Body:   r,
+	}
+
+	if !mtime.IsZero() {
+		input.Metadata = map[string]string{mtimeMetadataKey: formatMtime(mtime)}
+	}
+
+	uploader := transfermanager.New(s.client, func(o *transfermanager.Options) {
+		// The transfer manager's own setting overrides the client's, so the
+		// relaxation the client is built with has to be repeated here: the
+		// checksum headers newer SDKs send are not understood by every S3
+		// implementation, and a repository is verified by the checksums in its
+		// own Release file.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
+
+	if _, err := uploader.UploadObject(s.ctx, input); err != nil {
+		return pathError("write", name, err)
+	}
+
+	return nil
 }
 
 func (s *s3FS) put(name string, body io.Reader, size int64, mtime time.Time) error {

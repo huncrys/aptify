@@ -261,8 +261,13 @@ mtime). Every name is repository-relative and slash separated - build them with
   links the published file and the temporary must not match a Release glob; `Clone` is
   `os.Link`, `Chtimes` is `os.Chtimes`.
 - `s3fs` (`repofs.NewS3`) is a bucket. A PUT is atomic per key, so there is no temporary;
+  `WriteFrom` goes through `feature/s3/transfermanager`, which splits a pool `.deb` over
+  its threshold across a multipart upload (a single PUT caps out at 5 GiB) and has to be
+  told not to send checksum headers, since its own setting overrides the client's;
   `Clone` is a server-side `CopyObject`, `Chtimes` a self-copy with the metadata replaced,
-  `MkdirAll` a no-op, `RemoveAll` a listing plus batched `DeleteObjects`. Modification
+  `MkdirAll` a no-op, `RemoveAll` a listing plus batched `DeleteObjects` whose `NoSuchKey`
+  error entries are successes - the name's own key is one, and not every implementation
+  reports a delete of a missing key the way Amazon does. Modification
   times live in the `mtime` object metadata as Unix `seconds[.fraction]` (rclone's and
   s3cmd's convention, parsed as two ints - never a float64), falling back to
   `LastModified`; `Stat` reports the recorded one, a `ReadDir` entry only what the listing

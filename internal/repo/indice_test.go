@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"testing"
 	stdtime "time"
+
+	"oaklab.hu/debian/aptify/internal/repofs"
 )
 
 // TestWriteIndiceFileUnchanged covers the two things a mirror and the by-hash
@@ -34,11 +36,12 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			fsys := repofs.NewOS(dir)
 			path := filepath.Join(dir, name)
 
 			body := []byte("Package: hello-world\n")
 
-			changed, err := writeIndiceFile(path, body)
+			changed, err := writeIndiceFile(fsys, name, body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -63,7 +66,7 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			changed, err = writeIndiceFile(path, body)
+			changed, err = writeIndiceFile(fsys, name, body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,7 +82,7 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 				t.Errorf("modification time: got %s, want %s", fi.ModTime(), modTime)
 			}
 
-			changed, err = writeIndiceFile(path, []byte("Package: hello-world\nVersion: 2.0\n"))
+			changed, err = writeIndiceFile(fsys, name, []byte("Package: hello-world\nVersion: 2.0\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +117,7 @@ func TestWriteIndiceFileUnchanged(t *testing.T) {
 func TestWriteIndiceFileLeavesNoTemporaries(t *testing.T) {
 	dir := t.TempDir()
 
-	if _, err := writeIndiceFile(filepath.Join(dir, "Packages"), []byte("Package: hello-world\n")); err != nil {
+	if _, err := writeIndiceFile(repofs.NewOS(dir), "Packages", []byte("Package: hello-world\n")); err != nil {
 		t.Fatal(err)
 	}
 

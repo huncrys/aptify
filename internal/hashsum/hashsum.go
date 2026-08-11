@@ -29,8 +29,7 @@ import (
 	"hash"
 	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"oaklab.hu/debian/deb822/types/filehash"
@@ -69,9 +68,10 @@ func (s Sums) Digests() []Digest {
 	}
 }
 
-// File returns every checksum of the file at path. Path is reported as given.
-func File(path string) (Sums, error) {
-	f, err := os.Open(path)
+// File returns every checksum of a file, read sequentially in a single pass.
+// The name is reported back as given.
+func File(fsys fs.FS, name string) (Sums, error) {
+	f, err := fsys.Open(name)
 	if err != nil {
 		return Sums{}, fmt.Errorf("failed to open file: %w", err)
 	}
@@ -87,7 +87,7 @@ func File(path string) (Sums, error) {
 	}
 
 	return Sums{
-		Path:   path,
+		Path:   name,
 		Size:   size,
 		MD5:    sum(md5Hash),
 		SHA1:   sum(sha1Hash),
@@ -97,18 +97,13 @@ func File(path string) (Sums, error) {
 
 // Directory returns the checksums of every file under dir matching one of the
 // globs, with paths relative to dir. by-hash trees are skipped: their entries
-// are hard links to files that are hashed under their own names, and a Release
-// file must not list them. Dot-prefixed files are skipped as well, so a
-// concurrent build's temporaries are never signed for.
-func Directory(dir string, globs []string) ([]Sums, error) {
-	dir, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path of directory: %w", err)
-	}
-
+// serve files that are hashed under their own names, and a Release file must
+// not list them. Dot-prefixed files are skipped as well, so a concurrent
+// build's temporaries are never signed for.
+func Directory(fsys fs.FS, dir string, globs []string) ([]Sums, error) {
 	var sums []Sums
 
-	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, dir, func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -131,23 +126,19 @@ func Directory(dir string, globs []string) ([]Sums, error) {
 				break
 			}
 
-			matched, _ = filepath.Match(filepath.Join(dir, glob), path)
+			matched, _ = path.Match(path.Join(dir, glob), name)
 		}
 
 		if !matched {
 			return nil
 		}
 
-		fileSums, err := File(path)
+		fileSums, err := File(fsys, name)
 		if err != nil {
 			return err
 		}
 
-		relativePath, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		fileSums.Path = filepath.ToSlash(relativePath)
+		fileSums.Path = relativeName(dir, name)
 
 		sums = append(sums, fileSums)
 
@@ -158,6 +149,17 @@ func Directory(dir string, globs []string) ([]Sums, error) {
 	}
 
 	return sums, nil
+}
+
+// relativeName is name relative to base. Both are slash separated names of the
+// same filesystem, and base is one of name's parents, which is what a walk
+// rooted at base hands back.
+func relativeName(base, name string) string {
+	if base == "." {
+		return name
+	}
+
+	return strings.TrimPrefix(strings.TrimPrefix(name, base), "/")
 }
 
 // MD5List returns the MD5Sum entries of a Release file.

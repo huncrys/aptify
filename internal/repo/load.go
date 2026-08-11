@@ -20,9 +20,8 @@ package repo
 
 import (
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -31,37 +30,44 @@ import (
 	"oaklab.hu/debian/deb822/types"
 )
 
-// loadExisting reads back what the repository directory already publishes.
-// This is what makes builds incremental: every dists/*/*/binary-*/Packages is
-// decoded into the package list of its release/component, there is no database.
+// packagesIndiceGlob matches every Packages indice a repository publishes,
+// which is the whole of its recorded state.
+const packagesIndiceGlob = "dists/*/*/binary-*/Packages"
+
+// loadExisting reads back what the repository already publishes. This is what
+// makes builds incremental: every dists/*/*/binary-*/Packages is decoded into
+// the package list of its release/component, there is no database.
 func (b *build) loadExisting() error {
-	if dir, err := os.Stat(b.repoDir); err == nil && dir.IsDir() {
-		slog.Info("Loading existing repository", slog.String("dir", b.repoDir))
+	if dir, err := b.fsys.Stat("."); err == nil && dir.IsDir() {
+		slog.Info("Loading existing repository", slog.String("dir", b.fsys.Name()))
 
-		if paths, err := filepath.Glob(filepath.Join(b.repoDir, "dists", "*", "*", "binary-*", "Packages")); err == nil {
-			for _, packagesFile := range paths {
-				parts := strings.FieldsFunc(packagesFile, func(c rune) bool { return os.PathSeparator == c })
-				releaseComponent := strings.Join(parts[len(parts)-4:len(parts)-2], "/")
-				slog.Debug("Found existing Packages file",
-					slog.String("file", packagesFile),
-					slog.String("release_component", releaseComponent))
+		paths, err := b.fsys.Glob(packagesIndiceGlob)
+		if err != nil {
+			return fmt.Errorf("failed to find existing Packages files: %w", err)
+		}
 
-				if _, ok := b.archs[releaseComponent]; !ok {
-					b.archs[releaseComponent] = make(map[string]bool)
-				}
+		for _, packagesFile := range paths {
+			parts := strings.Split(packagesFile, "/")
+			releaseComponent := strings.Join(parts[len(parts)-4:len(parts)-2], "/")
+			slog.Debug("Found existing Packages file",
+				slog.String("file", packagesFile),
+				slog.String("release_component", releaseComponent))
 
-				packages, err := readPackagesFile(packagesFile)
-				if err != nil {
-					return err
-				}
+			if _, ok := b.archs[releaseComponent]; !ok {
+				b.archs[releaseComponent] = make(map[string]bool)
+			}
 
-				b.packages[releaseComponent] = append(b.packages[releaseComponent], packages...)
+			packages, err := readPackagesFile(b.fsys, packagesFile)
+			if err != nil {
+				return err
+			}
 
-				// Get the architectures from the Packages file.
-				for _, pkg := range packages {
-					b.candidates[pkg.Filename] = true
-					b.archs[releaseComponent][pkg.Architecture.String()] = true
-				}
+			b.packages[releaseComponent] = append(b.packages[releaseComponent], packages...)
+
+			// Get the architectures from the Packages file.
+			for _, pkg := range packages {
+				b.candidates[pkg.Filename] = true
+				b.archs[releaseComponent][pkg.Architecture.String()] = true
 			}
 		}
 
@@ -73,8 +79,7 @@ func (b *build) loadExisting() error {
 					return pkg.Compare(existingPkg) == 0
 				}) {
 					if b.reread {
-						pkgPath := filepath.Join(b.repoDir, pkg.Filename)
-						if freshPkg, err := deb.GetMetadata(pkgPath); err != nil {
+						if freshPkg, err := deb.GetMetadata(b.poolFilePath(pkg.Filename)); err != nil {
 							return fmt.Errorf("failed to reread package metadata: %w", err)
 						} else {
 							// The control file carries none of the checksums
@@ -101,8 +106,8 @@ func (b *build) loadExisting() error {
 // readPackagesFile decodes a single Packages indice, closing the file before
 // returning so that a caller iterating over many of them does not accumulate
 // open handles.
-func readPackagesFile(path string) ([]types.Package, error) {
-	reader, err := os.Open(path)
+func readPackagesFile(fsys fs.FS, name string) ([]types.Package, error) {
+	reader, err := fsys.Open(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Packages file: %w", err)
 	}

@@ -23,8 +23,7 @@ import (
 	"crypto"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
+	"path"
 	"slices"
 	"strings"
 	stdtime "time"
@@ -34,6 +33,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/hashsum"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
@@ -49,8 +49,8 @@ import (
 // links to files already listed under their own names.
 var releaseIndiceGlobs = []string{"*/binary-*/Packages*", "*/binary-*/Release", "*/Contents-*"}
 
-func readReleaseFile(releaseDir string, privateKey *openpgp.Entity) (*types.Release, error) {
-	releaseFile, err := os.Open(filepath.Join(releaseDir, "InRelease"))
+func readReleaseFile(fsys repofs.FS, releaseDir string, privateKey *openpgp.Entity) (*types.Release, error) {
+	releaseFile, err := fsys.Open(path.Join(releaseDir, "InRelease"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Release file: %w", err)
 	}
@@ -69,7 +69,7 @@ func readReleaseFile(releaseDir string, privateKey *openpgp.Entity) (*types.Rele
 	return &release, nil
 }
 
-func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repository, releaseConf v1alpha1.ReleaseConfig, architectures []arch.Arch, privateKey *openpgp.Entity) error {
+func writeReleaseFile(fsys repofs.FS, releaseDir string, modified bool, conf *v1alpha1.Repository, releaseConf v1alpha1.ReleaseConfig, architectures []arch.Arch, privateKey *openpgp.Entity) error {
 	var components []string
 	for _, component := range releaseConf.Components {
 		components = append(components, component.Name)
@@ -109,7 +109,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 
 	// The existing release is both the change oracle and the record of the
 	// previous by-hash generation, so it is kept rather than only compared.
-	existing, err := readReleaseFile(releaseDir, privateKey)
+	existing, err := readReleaseFile(fsys, releaseDir, privateKey)
 	if err != nil {
 		// Nothing to compare against, and nothing published for a client to be
 		// holding: the release has to be written whatever the indices did.
@@ -144,7 +144,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 	// A by-hash entry the live release names has to be on disk, or a client
 	// that read it fetches a 404. Statting is enough; nothing is hashed.
 	if byHash && !modified {
-		modified = !byHashComplete(releaseDir, previous)
+		modified = !byHashComplete(fsys, releaseDir, previous)
 	}
 
 	if !modified {
@@ -153,7 +153,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 		if byHash {
 			// Nothing was superseded, but entries retired by an earlier build
 			// still age out.
-			return pruneByHash(releaseDir, previous, previous, conf.ByHashRetention())
+			return pruneByHash(fsys, releaseDir, previous, previous, conf.ByHashRetention())
 		}
 
 		return nil
@@ -161,7 +161,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 
 	slog.Info("Writing Release file", slog.String("dir", releaseDir))
 
-	sums, err := hashsum.Directory(releaseDir, releaseIndiceGlobs)
+	sums, err := hashsum.Directory(fsys, releaseDir, releaseIndiceGlobs)
 	if err != nil {
 		return fmt.Errorf("failed to hash release: %w", err)
 	}
@@ -176,7 +176,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 
 		// Publish the tree before the release advertises it, so that
 		// Acquire-By-Hash is never live over an incomplete tree.
-		if err := linkByHash(releaseDir, sums); err != nil {
+		if err := linkByHash(fsys, releaseDir, sums); err != nil {
 			return fmt.Errorf("failed to publish by-hash indices: %w", err)
 		}
 	}
@@ -187,7 +187,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 		return fmt.Errorf("failed to encode release: %w", err)
 	}
 
-	if err := writeFileAtomic(filepath.Join(releaseDir, "Release"), body.Bytes(), 0o644); err != nil {
+	if err := fsys.WriteFile(path.Join(releaseDir, "Release"), body.Bytes(), 0o644, stdtime.Time{}); err != nil {
 		return fmt.Errorf("failed to write Release file: %w", err)
 	}
 
@@ -202,7 +202,7 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 		return fmt.Errorf("failed to sign Release file: %w", err)
 	}
 
-	if err := writeFileAtomic(filepath.Join(releaseDir, "Release.gpg"), detachedSignature.Bytes(), 0o644); err != nil {
+	if err := fsys.WriteFile(path.Join(releaseDir, "Release.gpg"), detachedSignature.Bytes(), 0o644, stdtime.Time{}); err != nil {
 		return fmt.Errorf("failed to write Release signature: %w", err)
 	}
 
@@ -224,17 +224,17 @@ func writeReleaseFile(releaseDir string, modified bool, conf *v1alpha1.Repositor
 
 	// InRelease is written last: it is the file apt prefers, so it is what
 	// makes the new generation live.
-	if err := writeFileAtomic(filepath.Join(releaseDir, "InRelease"), inRelease.Bytes(), 0o644); err != nil {
+	if err := fsys.WriteFile(path.Join(releaseDir, "InRelease"), inRelease.Bytes(), 0o644, stdtime.Time{}); err != nil {
 		return fmt.Errorf("failed to write InRelease file: %w", err)
 	}
 
 	if !byHash {
 		// The flag is gone from the release just published, so the tree it
 		// described can go too. Never the other way round.
-		return removeByHash(releaseDir)
+		return removeByHash(fsys, releaseDir)
 	}
 
-	return pruneByHash(releaseDir, current, previous, conf.ByHashRetention())
+	return pruneByHash(fsys, releaseDir, current, previous, conf.ByHashRetention())
 }
 
 // noSupportForArchitectureAll returns the value of the Release field of the

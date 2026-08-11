@@ -22,14 +22,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
-	"path/filepath"
+	"path"
 	"slices"
 	"sort"
 	"strings"
+	stdtime "time"
 
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
@@ -47,7 +49,7 @@ func (b *build) writeIndices() error {
 
 		for _, componentConf := range releaseConf.Components {
 			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
-			componentDir := filepath.Join(b.repoDir, "dists", releaseConf.Name, componentConf.Name)
+			componentDir := path.Join("dists", releaseConf.Name, componentConf.Name)
 
 			// Architecture `all` packages go into every architecture's indices,
 			// so a separate `all` architecture only duplicates them. Earlier
@@ -62,7 +64,7 @@ func (b *build) writeIndices() error {
 				delete(componentArchs, archAll.String())
 
 				var err error
-				migrated, err = removeArchIndices(componentDir, archAll.String())
+				migrated, err = removeArchIndices(b.fsys, componentDir, archAll.String())
 				if err != nil {
 					return err
 				}
@@ -74,16 +76,16 @@ func (b *build) writeIndices() error {
 			for architecture := range componentArchs {
 				architectures = append(architectures, arch.MustParse(architecture))
 
-				archDir := filepath.Join(componentDir, "binary-"+architecture)
+				archDir := path.Join(componentDir, "binary-"+architecture)
 
-				if err := os.MkdirAll(archDir, 0o755); err != nil {
+				if err := b.fsys.MkdirAll(archDir); err != nil {
 					return fmt.Errorf("failed to create dists subdirectory: %w", err)
 				}
 
 				// The stub is rendered and compared on every build rather than
 				// gated on the incremental skip below, so a repository
 				// published before it existed heals itself.
-				stubWritten, err := writeComponentReleaseFile(archDir, releaseConf,
+				stubWritten, err := writeComponentReleaseFile(b.fsys, archDir, releaseConf,
 					componentConf.Name, architecture, b.conf.ByHashEnabled())
 				if err != nil {
 					return fmt.Errorf("failed to write component Release file: %w", err)
@@ -105,7 +107,7 @@ func (b *build) writeIndices() error {
 				// was published has to be rewritten even when nothing changed,
 				// otherwise apt never acquires Contents at all.
 				writeContents := writePackages ||
-					!contentsIndiceComplete(componentDir, architecture)
+					!contentsIndiceComplete(b.fsys, componentDir, architecture)
 
 				if !writePackages && !writeContents {
 					slog.Info("Skipping index generation, no new or removed packages found",
@@ -126,7 +128,7 @@ func (b *build) writeIndices() error {
 				})
 
 				if writePackages {
-					changed, err := writePackagesIndice(archDir, packages)
+					changed, err := writePackagesIndice(b.fsys, archDir, packages)
 					if err != nil {
 						return fmt.Errorf("failed to write package lists: %w", err)
 					}
@@ -145,8 +147,8 @@ func (b *build) writeIndices() error {
 					continue
 				}
 
-				changed, err := writeContentsIndice(b.repoDir, componentDir, architecture,
-					packages, newPackages, removedPackages, b.reread)
+				changed, err := b.writeContentsIndice(componentDir, architecture,
+					packages, newPackages, removedPackages)
 				if err != nil {
 					return fmt.Errorf("failed to write Contents file: %w", err)
 				}
@@ -161,13 +163,13 @@ func (b *build) writeIndices() error {
 		})
 		architectures = slices.Compact(architectures)
 
-		releaseDir := filepath.Join(b.repoDir, "dists", releaseConf.Name)
+		releaseDir := path.Join("dists", releaseConf.Name)
 
-		if err := os.MkdirAll(releaseDir, 0o755); err != nil {
+		if err := b.fsys.MkdirAll(releaseDir); err != nil {
 			return fmt.Errorf("failed to create release directory: %w", err)
 		}
 
-		if err := writeReleaseFile(releaseDir, modified, b.conf, releaseConf, architectures, b.privateKey); err != nil {
+		if err := writeReleaseFile(b.fsys, releaseDir, modified, b.conf, releaseConf, architectures, b.privateKey); err != nil {
 			return fmt.Errorf("failed to write release: %w", err)
 		}
 	}
@@ -191,7 +193,7 @@ func filterForArch(pkgs []types.Package, architecture string) []types.Package {
 
 // writePackagesIndice writes every published variant of the Packages indice,
 // reporting whether any of them changed.
-func writePackagesIndice(archDir string, packages []types.Package) (bool, error) {
+func writePackagesIndice(fsys repofs.FS, archDir string, packages []types.Package) (bool, error) {
 	slog.Info("Writing Packages indice",
 		slog.String("dir", archDir), slog.Int("count", len(packages)))
 
@@ -202,7 +204,7 @@ func writePackagesIndice(archDir string, packages []types.Package) (bool, error)
 
 	var changed bool
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
-		fileChanged, err := writeIndiceFile(filepath.Join(archDir, name), packageList.Bytes())
+		fileChanged, err := writeIndiceFile(fsys, path.Join(archDir, name), packageList.Bytes())
 		if err != nil {
 			return changed, fmt.Errorf("failed to write Packages file: %w", err)
 		}
@@ -217,7 +219,7 @@ func writePackagesIndice(archDir string, packages []types.Package) (bool, error)
 // Release stub apt reads alongside the indices in the directory. It is
 // rendered and compared on every build rather than gated on the incremental
 // skip logic, so a repository published before the stub existed heals itself.
-func writeComponentReleaseFile(archDir string, releaseConf v1alpha1.ReleaseConfig, component, architecture string, byHash bool) (bool, error) {
+func writeComponentReleaseFile(fsys repofs.FS, archDir string, releaseConf v1alpha1.ReleaseConfig, component, architecture string, byHash bool) (bool, error) {
 	// Archive names the suite the directory belongs to; a release that does
 	// not configure one is only ever addressed by its codename.
 	archive := releaseConf.Suite
@@ -244,14 +246,14 @@ func writeComponentReleaseFile(archDir string, releaseConf v1alpha1.ReleaseConfi
 		return false, fmt.Errorf("failed to marshal component release: %w", err)
 	}
 
-	path := filepath.Join(archDir, "Release")
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, body.Bytes()) {
+	name := path.Join(archDir, "Release")
+	if existing, err := fs.ReadFile(fsys, name); err == nil && bytes.Equal(existing, body.Bytes()) {
 		return false, nil
 	}
 
 	slog.Info("Writing component Release file", slog.String("dir", archDir))
 
-	if err := writeFileAtomic(path, body.Bytes(), 0o644); err != nil {
+	if err := fsys.WriteFile(name, body.Bytes(), 0o644, stdtime.Time{}); err != nil {
 		return false, fmt.Errorf("failed to write component Release file: %w", err)
 	}
 
@@ -260,23 +262,23 @@ func writeComponentReleaseFile(archDir string, releaseConf v1alpha1.ReleaseConfi
 
 // removeArchIndices deletes every indice published for an architecture,
 // reporting whether there was anything left to delete.
-func removeArchIndices(componentDir, arch string) (bool, error) {
-	paths := []string{filepath.Join(componentDir, "binary-"+arch)}
+func removeArchIndices(fsys repofs.FS, componentDir, arch string) (bool, error) {
+	names := []string{path.Join(componentDir, "binary-"+arch)}
 	for _, name := range contentsIndiceNames(arch) {
-		paths = append(paths, filepath.Join(componentDir, name))
+		names = append(names, path.Join(componentDir, name))
 	}
 
 	var removed bool
-	for _, path := range paths {
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	for _, name := range names {
+		if _, err := fsys.Stat(name); errors.Is(err, fs.ErrNotExist) {
 			continue
 		} else if err != nil {
 			return removed, fmt.Errorf("failed to stat stale indice: %w", err)
 		}
 
-		slog.Info("Removing stale indice", slog.String("path", path))
+		slog.Info("Removing stale indice", slog.String("path", name))
 
-		if err := os.RemoveAll(path); err != nil {
+		if err := fsys.RemoveAll(name); err != nil {
 			return removed, fmt.Errorf("failed to remove stale indice: %w", err)
 		}
 

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -31,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/hashsum"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822"
 )
 
@@ -213,10 +215,10 @@ func TestChangelogsPruneUnreferenced(t *testing.T) {
 // aptify wrote it, without the fields a current build has to backfill. Every
 // variant is rewritten from the same bytes, exactly as the pipeline publishes
 // them.
-func stripDigestFields(t *testing.T, archDir string) {
+func stripDigestFields(t *testing.T, repoDir, archDir string) {
 	t.Helper()
 
-	packages := decodePackages(t, filepath.Join(archDir, "Packages"))
+	packages := decodePackages(t, filepath.Join(repoDir, filepath.FromSlash(archDir), "Packages"))
 	require.NotEmpty(t, packages)
 
 	for i := range packages {
@@ -228,8 +230,9 @@ func stripDigestFields(t *testing.T, archDir string) {
 	var body bytes.Buffer
 	require.NoError(t, deb822.Marshal(&body, packages))
 
+	fsys := repofs.NewOS(repoDir)
 	for _, name := range []string{"Packages", "Packages.gz", "Packages.xz"} {
-		_, err := writeIndiceFile(filepath.Join(archDir, name), body.Bytes())
+		_, err := writeIndiceFile(fsys, path.Join(archDir, name), body.Bytes())
 		require.NoError(t, err)
 	}
 }
@@ -244,8 +247,7 @@ func TestBackfillHealsIncompleteStanzas(t *testing.T) {
 	confPath := writeTestConfig(t, singleComponentConfig(0, debPath(t, "hello-world_1.0_amd64.deb")))
 	mustBuild(t, repoDir, confPath, false, false)
 
-	archDir := distPath(repoDir, testReleaseName, testComponentName, "binary-amd64")
-	stripDigestFields(t, archDir)
+	stripDigestFields(t, repoDir, distName(testReleaseName, testComponentName, "binary-amd64"))
 
 	inReleasePath := filepath.Join(repoDir, "dists", testReleaseName, "InRelease")
 	before, err := os.ReadFile(inReleasePath)
@@ -260,7 +262,7 @@ func TestBackfillHealsIncompleteStanzas(t *testing.T) {
 
 	pkg := packages[0]
 
-	sums, err := hashsum.File(filepath.Join(repoDir, filepath.FromSlash(pkg.Filename)))
+	sums, err := hashsum.File(os.DirFS(repoDir), pkg.Filename)
 	require.NoError(t, err)
 
 	assert.Equal(t, sums.MD5, pkg.MD5sum)
@@ -281,8 +283,7 @@ func TestBackfillWarnsOnMissingPoolFile(t *testing.T) {
 	confPath := writeTestConfig(t, singleComponentConfig(0, debPath(t, "hello-world_1.0_amd64.deb")))
 	mustBuild(t, repoDir, confPath, false, false)
 
-	archDir := distPath(repoDir, testReleaseName, testComponentName, "binary-amd64")
-	stripDigestFields(t, archDir)
+	stripDigestFields(t, repoDir, distName(testReleaseName, testComponentName, "binary-amd64"))
 
 	published := packagesIn(t, repoDir, "amd64")
 	require.Len(t, published, 1)
@@ -361,7 +362,7 @@ func TestRereadKeepsRecordedFileFields(t *testing.T) {
 
 	// Deliberately the recorded values rather than the file's own: a rebuilt
 	// package wants a version bump, the reread does not invent one.
-	sums, err := hashsum.File(poolPath)
+	sums, err := hashsum.File(repofs.LocalFile(poolPath))
 	require.NoError(t, err)
 	assert.NotEqual(t, sums.SHA256, packages[0].SHA256)
 
@@ -405,7 +406,7 @@ func TestInspectListsPublishedPackages(t *testing.T) {
 	require.Contains(t, packageVersions(packagesIn(t, repoDir, "arm64")), "hello-world 3.0 all")
 
 	var buf bytes.Buffer
-	require.NoError(t, Inspect(repoDir, &buf))
+	require.NoError(t, Inspect(repofs.NewOS(repoDir), &buf))
 
 	var inspected []map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &inspected))

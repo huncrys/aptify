@@ -22,12 +22,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 
-	cp "github.com/otiai10/copy"
 	"oaklab.hu/debian/aptify/internal/deb"
 	"oaklab.hu/debian/aptify/internal/hashsum"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/types"
 )
 
@@ -52,7 +53,7 @@ func (b *build) ingest() error {
 						return fmt.Errorf("failed to get package metadata: %w", err)
 					}
 
-					sums, err := hashsum.File(pkgPath)
+					sums, err := hashsum.File(repofs.LocalFile(pkgPath))
 					if err != nil {
 						return fmt.Errorf("failed to hash package: %w", err)
 					}
@@ -99,17 +100,26 @@ func (b *build) ingest() error {
 					}
 					b.archs[releaseComponent][pkg.Architecture.String()] = true
 
+					// The pool copy is byte for byte the file that was just
+					// hashed, so its size is read here rather than by statting
+					// the copy back.
+					fi, err := os.Stat(pkgPath)
+					if err != nil {
+						return fmt.Errorf("failed to get package size: %w", err)
+					}
+					pkg.Size = int(fi.Size())
+
 					// Only copy each deb file once.
 					// Use the component name from the first release that includes the package.
 					if existingPoolPath, ok := b.poolPaths[pkgPath]; !ok {
 						pkg.Filename = poolPathForPackage(componentConf.Name, pkg)
 
-						if err := os.MkdirAll(filepath.Dir(filepath.Join(b.repoDir, pkg.Filename)), 0o755); err != nil {
+						if err := b.fsys.MkdirAll(path.Dir(pkg.Filename)); err != nil {
 							return fmt.Errorf("failed to create pool subdirectory: %w", err)
 						}
 
-						if err := cp.Copy(pkgPath, filepath.Join(b.repoDir, pkg.Filename), cp.Options{PreserveTimes: true}); err != nil {
-							return fmt.Errorf("failed to copy package: %w", err)
+						if err := b.copyToPool(pkgPath, pkg.Filename, fi); err != nil {
+							return err
 						}
 
 						b.poolPaths[pkgPath] = pkg.Filename
@@ -118,18 +128,28 @@ func (b *build) ingest() error {
 					}
 					b.candidates[pkg.Filename] = true
 
-					// Get the size of the package file.
-					fi, err := os.Stat(filepath.Join(b.repoDir, pkg.Filename))
-					if err != nil {
-						return fmt.Errorf("failed to get package size: %w", err)
-					}
-					pkg.Size = int(fi.Size())
-
 					b.packages[releaseComponent] = append(b.packages[releaseComponent], *pkg)
 					b.added[releaseComponent] = append(b.added[releaseComponent], *pkg)
 				}
 			}
 		}
+	}
+
+	return nil
+}
+
+// copyToPool publishes a source .deb under its pool path, keeping the source
+// file's modification time so that re-running a build does not churn a
+// mirrored pool.
+func (b *build) copyToPool(sourcePath, poolPath string, fi os.FileInfo) error {
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to open package: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if err := b.fsys.WriteFrom(poolPath, f, fi.Size(), fi.ModTime()); err != nil {
+		return fmt.Errorf("failed to copy package: %w", err)
 	}
 
 	return nil

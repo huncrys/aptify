@@ -19,6 +19,7 @@
 package repo
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
@@ -30,14 +31,15 @@ import (
 	"oaklab.hu/debian/aptify/internal/config"
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/keys"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/types"
 )
 
-// Options is everything a repository build is given: where the repository
-// lives, the configuration describing it, the key it is signed with, and the
-// two switches that override the incremental skips.
+// Options is everything a repository build is given: where the repository is
+// published, the configuration describing it, the key it is signed with, and
+// the two switches that override the incremental skips.
 type Options struct {
-	RepoDir        string
+	FS             repofs.FS
 	ConfigPath     string
 	PrivateKeyPath string
 	Force          bool
@@ -45,11 +47,11 @@ type Options struct {
 }
 
 // build is the state one repository build carries across its stages. The
-// repository directory is the only state store there is, so the maps below are
+// repository itself is the only state store there is, so the maps below are
 // what the stages hand each other: what the repository already published, what
 // this build added and removed, and which pool files are in play.
 type build struct {
-	repoDir        string
+	fsys           repofs.FS
 	privateKeyPath string
 	conf           *v1alpha1.Repository
 	privateKey     *openpgp.Entity
@@ -95,7 +97,7 @@ func Build(opts Options) error {
 	}
 
 	b := &build{
-		repoDir:        opts.RepoDir,
+		fsys:           opts.FS,
 		privateKeyPath: opts.PrivateKeyPath,
 		conf:           conf,
 		privateKey:     privateKey,
@@ -148,21 +150,23 @@ func Build(opts Options) error {
 	return b.writeSigningKey()
 }
 
+// signingKeyName is where the public half of the signing key is published.
+const signingKeyName = "signing_key.asc"
+
 // writeSigningKey saves a copy of the public half of the signing key, keeping
 // the private key's modification time so that a rebuild does not churn a
 // mirrored repository.
 func (b *build) writeSigningKey() error {
-	signingKeyFilePath := filepath.Join(b.repoDir, "signing_key.asc")
-	if _, err := os.Stat(signingKeyFilePath); err == nil {
+	if _, err := b.fsys.Stat(signingKeyName); err == nil {
 
-		if signingKeyFile, err := os.Open(signingKeyFilePath); err == nil {
+		if signingKeyFile, err := b.fsys.Open(signingKeyName); err == nil {
 			defer signingKeyFile.Close()
 
 			if keyRing, err := openpgp.ReadArmoredKeyRing(signingKeyFile); err == nil {
 				for _, publicKey := range keyRing {
 					if slices.Equal(publicKey.PrimaryKey.Fingerprint, b.privateKey.PrimaryKey.Fingerprint) {
 						slog.Info("Skipping writing signing key, no changes",
-							slog.String("file", signingKeyFilePath))
+							slog.String("file", signingKeyName))
 						return nil
 					}
 				}
@@ -170,26 +174,34 @@ func (b *build) writeSigningKey() error {
 		}
 
 		slog.Info("Signing key file does not match private key, overwriting",
-			slog.String("file", signingKeyFilePath))
+			slog.String("file", signingKeyName))
 	}
 
-	slog.Info("Writing signing key file", slog.String("file", signingKeyFilePath))
+	slog.Info("Writing signing key file", slog.String("file", signingKeyName))
 
-	signingKeyFile, err := os.Create(filepath.Join(b.repoDir, "signing_key.asc"))
-	if err != nil {
-		return fmt.Errorf("failed to create signing key file: %w", err)
-	}
-	defer signingKeyFile.Close()
-
-	if err := keys.WritePublic(signingKeyFile, b.privateKey); err != nil {
+	var body bytes.Buffer
+	if err := keys.WritePublic(&body, b.privateKey); err != nil {
 		return err
 	}
 
+	// A private key that cannot be statted leaves the published copy dated by
+	// the write itself.
+	var mtime stdtime.Time
 	if stat, err := os.Stat(b.privateKeyPath); err == nil {
-		if err := os.Chtimes(signingKeyFilePath, stdtime.Time{}, stat.ModTime()); err != nil {
-			return fmt.Errorf("failed to set signing key file modification time: %w", err)
-		}
+		mtime = stat.ModTime()
+	}
+
+	if err := b.fsys.WriteFile(signingKeyName, body.Bytes(), 0o644, mtime); err != nil {
+		return fmt.Errorf("failed to write signing key file: %w", err)
 	}
 
 	return nil
+}
+
+// poolFilePath is the local path of a pool file. internal/deb and
+// internal/hashsum still open a package by its own path rather than through
+// the repository's filesystem, so a pool read has to be resolved against the
+// root here.
+func (b *build) poolFilePath(name string) string {
+	return filepath.Join(b.fsys.Name(), filepath.FromSlash(name))
 }

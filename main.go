@@ -30,6 +30,7 @@ import (
 	"oaklab.hu/debian/aptify/internal/constants"
 	"oaklab.hu/debian/aptify/internal/keys"
 	"oaklab.hu/debian/aptify/internal/repo"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/aptify/internal/util"
 )
 
@@ -136,7 +137,7 @@ func main() {
 					privateKeyPath := filepath.Join(cmd.String("config-dir"), "aptify_private.asc")
 
 					return repo.Build(repo.Options{
-						RepoDir:        repoDir,
+						FS:             repofs.NewOS(repoDir),
 						ConfigPath:     cmd.String("config"),
 						PrivateKeyPath: privateKeyPath,
 						Force:          cmd.Bool("force"),
@@ -159,7 +160,7 @@ func main() {
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					repoDir := cmd.String("repository-dir")
 
-					return repo.Inspect(repoDir, os.Stdout)
+					return repo.Inspect(repofs.NewOS(repoDir), os.Stdout)
 				},
 			},
 		},

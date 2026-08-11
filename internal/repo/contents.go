@@ -23,15 +23,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
-	"os"
-	"path/filepath"
+	"path"
 	"slices"
 	"sort"
 
 	"github.com/dpeckett/uncompr"
 	"oaklab.hu/debian/aptify/internal/deb"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
 )
@@ -52,9 +53,9 @@ func latestPackages(packages []types.Package) map[string]types.Package {
 
 // contentsIndiceComplete reports whether every published variant of the
 // Contents indice for an architecture is already on disk.
-func contentsIndiceComplete(componentDir, arch string) bool {
+func contentsIndiceComplete(fsys repofs.FS, componentDir, arch string) bool {
 	for _, name := range contentsIndiceNames(arch) {
-		if _, err := os.Stat(filepath.Join(componentDir, name)); err != nil {
+		if _, err := fsys.Stat(path.Join(componentDir, name)); err != nil {
 			return false
 		}
 	}
@@ -76,14 +77,14 @@ func contentsIndiceNames(arch string) []string {
 // writeContentsIndice rewrites the Contents indice for an architecture,
 // reporting whether any published variant changed. packages is everything the
 // architecture publishes, newPackages and removedPackages what this build
-// added and dropped; reread forces every package to be read back from the pool
-// rather than only those whose published contents can have changed.
-func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackages, removedPackages []types.Package, reread bool) (bool, error) {
-	contentsPath := filepath.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
+// added and dropped; --reread forces every package to be read back from the
+// pool rather than only those whose published contents can have changed.
+func (b *build) writeContentsIndice(componentDir, arch string, packages, newPackages, removedPackages []types.Package) (bool, error) {
+	contentsPath := path.Join(componentDir, fmt.Sprintf("Contents-%s.gz", arch))
 
 	// Paths shipped by each qualified package name, seeded with whatever the
 	// existing indice holds for the packages we are not rewriting.
-	packageFiles, err := readContentsIndice(contentsPath)
+	packageFiles, err := readContentsIndice(b.fsys, contentsPath)
 	if err != nil {
 		return false, err
 	}
@@ -116,7 +117,7 @@ func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackag
 		// The indice describes whichever version was newest last time, so it
 		// only goes stale when this build published a newer version or
 		// removed the very one it described.
-		stale := reread || !described[name]
+		stale := b.reread || !described[name]
 		if added, ok := latestNew[name]; ok && added.Compare(pkg) == 0 {
 			stale = true
 		}
@@ -128,9 +129,9 @@ func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackag
 			continue
 		}
 
-		pkgContents, err := deb.GetPackageContents(filepath.Join(repoDir, pkg.Filename))
+		pkgContents, err := deb.GetPackageContents(b.poolFilePath(pkg.Filename))
 		if err != nil {
-			return false, fmt.Errorf("failed to get package contents: %w %s", err, filepath.Join(repoDir, pkg.Filename))
+			return false, fmt.Errorf("failed to get package contents: %w %s", err, pkg.Filename)
 		}
 
 		// Drop the package's previous entries, whatever section it was filed
@@ -150,34 +151,34 @@ func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackag
 	// Invert into the layout of the file itself: one line per path, naming
 	// every package that ships it.
 	pathPackages := make(map[string][]string)
-	for pkg, paths := range packageFiles {
-		for _, path := range paths {
-			if !slices.Contains(pathPackages[path], pkg) {
-				pathPackages[path] = append(pathPackages[path], pkg)
+	for pkg, filePaths := range packageFiles {
+		for _, filePath := range filePaths {
+			if !slices.Contains(pathPackages[filePath], pkg) {
+				pathPackages[filePath] = append(pathPackages[filePath], pkg)
 			}
 		}
 	}
 
-	paths := slices.Sorted(maps.Keys(pathPackages))
+	filePaths := slices.Sorted(maps.Keys(pathPackages))
 
 	slog.Info("Writing Contents indice",
-		slog.String("dir", componentDir), slog.Int("count", len(paths)))
+		slog.String("dir", componentDir), slog.Int("count", len(filePaths)))
 
 	var contentsList bytes.Buffer
 
 	cw := contents.NewWriter(&contentsList)
-	for _, path := range paths {
-		packages := pathPackages[path]
+	for _, filePath := range filePaths {
+		packages := pathPackages[filePath]
 		sort.Strings(packages)
 
-		if err := cw.Write(contents.Entry{Path: path, Packages: packages}); err != nil {
+		if err := cw.Write(contents.Entry{Path: filePath, Packages: packages}); err != nil {
 			return false, fmt.Errorf("failed to write contents: %w", err)
 		}
 	}
 
 	var changed bool
 	for _, name := range contentsIndiceNames(arch) {
-		fileChanged, err := writeIndiceFile(filepath.Join(componentDir, name), contentsList.Bytes())
+		fileChanged, err := writeIndiceFile(b.fsys, path.Join(componentDir, name), contentsList.Bytes())
 		if err != nil {
 			return changed, fmt.Errorf("failed to write Contents file: %w", err)
 		}
@@ -190,11 +191,11 @@ func writeContentsIndice(repoDir, componentDir, arch string, packages, newPackag
 
 // readContentsIndice reads an existing Contents indice into the set of paths
 // shipped by each qualified package name. A missing indice is not an error.
-func readContentsIndice(contentsPath string) (map[string][]string, error) {
+func readContentsIndice(fsys fs.FS, contentsPath string) (map[string][]string, error) {
 	packageFiles := make(map[string][]string)
 
-	f, err := os.Open(contentsPath)
-	if errors.Is(err, os.ErrNotExist) {
+	f, err := fsys.Open(contentsPath)
+	if errors.Is(err, fs.ErrNotExist) {
 		return packageFiles, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to open Contents file: %w", err)

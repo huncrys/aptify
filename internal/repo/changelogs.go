@@ -22,9 +22,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
+	"path"
 	"slices"
 	"strings"
 	stdtime "time"
@@ -44,12 +45,12 @@ func (b *build) changelogs() error {
 		return nil
 	}
 
-	changelogReferences, err := writeChangelogs(b.repoDir, b.packages)
+	changelogReferences, err := b.writeChangelogs()
 	if err != nil {
 		return fmt.Errorf("failed to write changelogs: %w", err)
 	}
 
-	if err := pruneChangelogs(b.repoDir, changelogReferences); err != nil {
+	if err := b.pruneChangelogs(changelogReferences); err != nil {
 		return err
 	}
 
@@ -58,9 +59,8 @@ func (b *build) changelogs() error {
 
 // pruneChangelogs deletes every published changelog file the build did not
 // reference.
-func pruneChangelogs(repoDir string, referenced []string) error {
-	changelogDir := filepath.Join(repoDir, "changelogs")
-	if err := filepath.WalkDir(changelogDir, func(changelogFile string, d os.DirEntry, err error) error {
+func (b *build) pruneChangelogs(referenced []string) error {
+	if err := fs.WalkDir(b.fsys, changelogsDir, func(changelogFile string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("failed to find changelog files: %w", err)
 		}
@@ -78,7 +78,7 @@ func pruneChangelogs(repoDir string, referenced []string) error {
 
 		slog.Info("Removing unused changelog file",
 			slog.String("file", changelogFile))
-		if err := os.Remove(changelogFile); err != nil {
+		if err := b.fsys.Remove(changelogFile); err != nil {
 			return fmt.Errorf("failed to remove unused changelog file: %w", err)
 		}
 
@@ -90,37 +90,40 @@ func pruneChangelogs(repoDir string, referenced []string) error {
 	return nil
 }
 
-func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]types.Package) ([]string, error) {
+// changelogsDir is where the Changelogs URL the Release file advertises
+// resolves to.
+const changelogsDir = "changelogs"
+
+func (b *build) writeChangelogs() ([]string, error) {
 	packages := make(map[string]types.Package)
-	for releaseComponent, releasePkgs := range packagesForReleaseComponent {
+	for releaseComponent, releasePkgs := range b.packages {
 		component := strings.Split(releaseComponent, "/")[1]
 		for _, pkg := range releasePkgs {
-			path := changelogPathForPackage(component, &pkg)
-			if current, ok := packages[path]; ok && !preferChangelogSource(&pkg, &current) {
+			relPath := changelogPathForPackage(component, &pkg)
+			if current, ok := packages[relPath]; ok && !preferChangelogSource(&pkg, &current) {
 				continue
 			}
 
-			packages[path] = pkg
+			packages[relPath] = pkg
 		}
 	}
 
-	dir := filepath.Join(repoDir, "changelogs")
-	slog.Info("Updating changelogs", slog.String("dir", dir))
+	slog.Info("Updating changelogs", slog.String("dir", changelogsDir))
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := b.fsys.MkdirAll(changelogsDir); err != nil {
 		return nil, fmt.Errorf("failed to create changelogs directory: %w", err)
 	}
 
 	referencedFiles := make([]string, 0, len(packages))
 	written := 0
-	for path, pkg := range packages {
-		changelogPath := filepath.Join(dir, path)
-		if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
+	for relPath, pkg := range packages {
+		changelogPath := path.Join(changelogsDir, relPath)
+		if _, err := b.fsys.Stat(changelogPath); errors.Is(err, fs.ErrNotExist) {
 			slog.Info("Creating changelog file", slog.String("file", changelogPath))
 
 			pkgSource, pkgVer := changelogSource(&pkg)
 
-			changelogData, changelogTime, err := deb.GetPackageChangelog(pkgSource, pkg.Name, filepath.Join(repoDir, pkg.Filename))
+			changelogData, changelogTime, err := deb.GetPackageChangelog(pkgSource, pkg.Name, b.poolFilePath(pkg.Filename))
 			if err != nil {
 				switch {
 				case errors.Is(err, deb.ErrPackageUnreadable):
@@ -168,16 +171,14 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 				}
 			}
 
-			if err := os.MkdirAll(filepath.Dir(changelogPath), 0o755); err != nil {
+			if err := b.fsys.MkdirAll(path.Dir(changelogPath)); err != nil {
 				return nil, fmt.Errorf("failed to create changelog subdirectory: %w", err)
 			}
 
-			if err := os.WriteFile(changelogPath, changelogData, 0o644); err != nil {
+			// Dated by the archive it came out of rather than by the build, so
+			// that a rebuild does not churn a mirror.
+			if err := b.fsys.WriteFile(changelogPath, changelogData, 0o644, changelogTime); err != nil {
 				return nil, fmt.Errorf("failed to write changelog file: %w", err)
-			}
-
-			if err := os.Chtimes(changelogPath, stdtime.Time{}, changelogTime); err != nil {
-				return nil, fmt.Errorf("failed to set changelog file modification time: %w", err)
 			}
 
 			written++
@@ -189,7 +190,7 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 	if written > 0 {
 		slog.Info("Wrote changelogs",
 			slog.Int("count", written),
-			slog.String("dir", dir))
+			slog.String("dir", changelogsDir))
 	} else {
 		slog.Info("No changelogs written, all files already exist")
 	}
@@ -259,6 +260,6 @@ func preferChangelogSource(candidate, current *types.Package) bool {
 func changelogPathForPackage(componentName string, pkg *types.Package) string {
 	pkgSource, pkgVer := changelogSource(pkg)
 
-	return filepath.Join(componentName, sourcePrefix(pkgSource), pkgSource,
+	return path.Join(componentName, sourcePrefix(pkgSource), pkgSource,
 		pkgSource+"_"+pkgVer.StringWithoutEpoch()+".changelog")
 }

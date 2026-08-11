@@ -43,6 +43,7 @@ import (
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/keys"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
@@ -120,7 +121,7 @@ func mustBuild(t *testing.T, repoDir, confPath string, force, reread bool) {
 	t.Helper()
 
 	require.NoError(t, Build(Options{
-		RepoDir:        repoDir,
+		FS:             repofs.NewOS(repoDir),
 		ConfigPath:     confPath,
 		PrivateKeyPath: testKeyPath(t),
 		Force:          force,
@@ -141,8 +142,9 @@ func snapshotTree(t *testing.T, dir string) map[string]treeEntry {
 	t.Helper()
 
 	tree := make(map[string]treeEntry)
+	fsys := os.DirFS(dir)
 
-	require.NoError(t, filepath.WalkDir(dir, func(filePath string, d fs.DirEntry, err error) error {
+	require.NoError(t, fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -150,22 +152,17 @@ func snapshotTree(t *testing.T, dir string) map[string]treeEntry {
 			return nil
 		}
 
-		relativePath, err := filepath.Rel(dir, filePath)
-		if err != nil {
-			return err
-		}
-
 		fi, err := d.Info()
 		if err != nil {
 			return err
 		}
 
-		sums, err := hashsum.File(filePath)
+		sums, err := hashsum.File(fsys, name)
 		if err != nil {
 			return err
 		}
 
-		tree[filepath.ToSlash(relativePath)] = treeEntry{sha256: sums.SHA256, mtime: fi.ModTime()}
+		tree[name] = treeEntry{sha256: sums.SHA256, mtime: fi.ModTime()}
 
 		return nil
 	}))
@@ -201,12 +198,14 @@ func verifyRepo(t *testing.T, repoDir string, releases ...string) {
 
 		// Every file the release names, hashed once and checked against all
 		// three lists.
+		releaseFS := os.DirFS(releaseDir)
+
 		sumsByName := make(map[string]hashsum.Sums, len(signed.SHA256))
 		for _, entry := range signed.SHA256 {
-			filePath := filepath.Join(releaseDir, filepath.FromSlash(entry.Filename))
-			require.FileExists(t, filePath, "%s names a file that is not published", release)
+			require.FileExists(t, filepath.Join(releaseDir, filepath.FromSlash(entry.Filename)),
+				"%s names a file that is not published", release)
 
-			sums, err := hashsum.File(filePath)
+			sums, err := hashsum.File(releaseFS, entry.Filename)
 			require.NoError(t, err)
 
 			require.Equal(t, entry.Size, sums.Size, "%s: size of %s", release, entry.Filename)
@@ -344,6 +343,12 @@ func singleComponentConfig(maxVersions uint, packages ...string) *v1alpha1.Repos
 // distPath addresses a file below a release's component directory.
 func distPath(repoDir, release, component string, elem ...string) string {
 	return filepath.Join(append([]string{repoDir, "dists", release, component}, elem...)...)
+}
+
+// distName is the same file as distPath, named the way the pipeline addresses
+// it: relative to the repository root and slash separated.
+func distName(release, component string, elem ...string) string {
+	return path.Join(append([]string{"dists", release, component}, elem...)...)
 }
 
 // packagesIn decodes the Packages indice of one architecture of the test

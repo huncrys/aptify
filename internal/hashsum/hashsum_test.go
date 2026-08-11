@@ -37,12 +37,12 @@ var releaseIndiceGlobs = []string{"*/binary-*/Packages*", "*/binary-*/Release", 
 // TestFile pins the digests against published test vectors, so that no
 // algorithm can quietly end up describing something else.
 func TestFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "abc")
-	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "abc"), []byte("abc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	sums, err := File(path)
+	sums, err := File(os.DirFS(dir), "abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestDirectory(t *testing.T) {
 		}
 	}
 
-	sums, err := Directory(dir, releaseIndiceGlobs)
+	sums, err := Directory(os.DirFS(dir), ".", releaseIndiceGlobs)
 	if err != nil {
 		t.Fatal(err)
 	}

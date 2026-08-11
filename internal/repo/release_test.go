@@ -28,6 +28,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"oaklab.hu/debian/aptify/internal/hashsum"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
 	"oaklab.hu/debian/deb822/types/boolean"
@@ -164,6 +165,7 @@ func TestPruneByHash(t *testing.T) {
 	const retention = 7 * 24 * stdtime.Hour
 
 	releaseDir := t.TempDir()
+	fsys := repofs.NewOS(releaseDir)
 
 	// The Contents indice lives at component level, so its by-hash tree does
 	// too; both have to be swept.
@@ -216,7 +218,7 @@ func TestPruneByHash(t *testing.T) {
 		write(dir, "old", 30*24*stdtime.Hour)
 	}
 
-	if err := pruneByHash(releaseDir, sets("old"), sets("old"), retention); err != nil {
+	if err := pruneByHash(fsys, ".", sets("old"), sets("old"), retention); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,7 +234,7 @@ func TestPruneByHash(t *testing.T) {
 		write(dir, "new", 0)
 	}
 
-	if err := pruneByHash(releaseDir, sets("new"), sets("old"), retention); err != nil {
+	if err := pruneByHash(fsys, ".", sets("new"), sets("old"), retention); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,7 +253,7 @@ func TestPruneByHash(t *testing.T) {
 	}
 
 	// A later build names neither: still inside the window.
-	if err := pruneByHash(releaseDir, sets("new"), sets("new"), retention); err != nil {
+	if err := pruneByHash(fsys, ".", sets("new"), sets("new"), retention); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,7 +268,7 @@ func TestPruneByHash(t *testing.T) {
 		write(dir, "old", retention+stdtime.Hour)
 	}
 
-	if err := pruneByHash(releaseDir, sets("new"), sets("new"), retention); err != nil {
+	if err := pruneByHash(fsys, ".", sets("new"), sets("new"), retention); err != nil {
 		t.Fatal(err)
 	}
 
@@ -285,6 +287,7 @@ func TestPruneByHash(t *testing.T) {
 // is old, not the entry.
 func TestPruneByHashKeepsCurrentEntries(t *testing.T) {
 	releaseDir := t.TempDir()
+	fsys := repofs.NewOS(releaseDir)
 
 	dir := filepath.Join(releaseDir, "main", "binary-amd64", "by-hash", "SHA256")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -303,7 +306,7 @@ func TestPruneByHashKeepsCurrentEntries(t *testing.T) {
 
 	current := map[string]map[string]bool{"main/binary-amd64/by-hash/SHA256": {"current": true}}
 
-	if err := pruneByHash(releaseDir, current, current, stdtime.Hour); err != nil {
+	if err := pruneByHash(fsys, ".", current, current, stdtime.Hour); err != nil {
 		t.Fatal(err)
 	}
 
@@ -320,6 +323,7 @@ func TestPruneByHashKeepsCurrentEntries(t *testing.T) {
 // nothing else does.
 func TestRemoveByHash(t *testing.T) {
 	releaseDir := t.TempDir()
+	fsys := repofs.NewOS(releaseDir)
 
 	for _, name := range []string{
 		"main/binary-amd64/by-hash/SHA256/cafebabe",
@@ -335,7 +339,7 @@ func TestRemoveByHash(t *testing.T) {
 		}
 	}
 
-	if err := removeByHash(releaseDir); err != nil {
+	if err := removeByHash(fsys, "."); err != nil {
 		t.Fatal(err)
 	}
 

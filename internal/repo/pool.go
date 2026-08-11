@@ -20,7 +20,7 @@ package repo
 
 import (
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"oaklab.hu/debian/deb822/types"
@@ -66,7 +66,7 @@ func poolPathForPackage(componentName string, pkg *types.Package) string {
 
 	// Debian names pool files without the epoch, so that the URL apt fetches
 	// carries no colon.
-	return filepath.Join("pool", componentName, sourcePrefix(source), source,
+	return path.Join("pool", componentName, sourcePrefix(source), source,
 		fmt.Sprintf("%s_%s_%s.deb", strings.TrimSpace(pkg.Name),
 			pkg.Version.StringWithoutEpoch(), pkg.Architecture))
 }

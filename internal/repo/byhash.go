@@ -23,12 +23,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
 	"path"
-	"path/filepath"
+	"strings"
 	stdtime "time"
 
 	"oaklab.hu/debian/aptify/internal/hashsum"
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/filehash"
 	"oaklab.hu/debian/deb822/types/list"
@@ -38,6 +38,17 @@ import (
 // published in, relative to the release directory and slash separated.
 func byHashDir(indicePath, algorithm string) string {
 	return path.Join(path.Dir(indicePath), hashsum.ByHashDirName, algorithm)
+}
+
+// relativeName is name relative to base. Both are slash separated names of the
+// same filesystem, and base is one of name's parents, which is what a walk
+// rooted at base hands back.
+func relativeName(base, name string) string {
+	if base == "." {
+		return name
+	}
+
+	return strings.TrimPrefix(strings.TrimPrefix(name, base), "/")
 }
 
 // byHashSets maps each by-hash directory to the set of entries these checksums
@@ -82,11 +93,11 @@ func byHashSetsFromRelease(r *types.Release) map[string]map[string]bool {
 	return sets
 }
 
-// byHashComplete reports whether every entry of the sets is on disk.
-func byHashComplete(releaseDir string, sets map[string]map[string]bool) bool {
+// byHashComplete reports whether every entry of the sets is published.
+func byHashComplete(fsys repofs.FS, releaseDir string, sets map[string]map[string]bool) bool {
 	for dir, hashes := range sets {
 		for hash := range hashes {
-			if _, err := os.Stat(filepath.Join(releaseDir, filepath.FromSlash(dir), hash)); err != nil {
+			if _, err := fsys.Stat(path.Join(releaseDir, dir, hash)); err != nil {
 				slog.Info("Republishing release, by-hash entry is missing",
 					slog.String("entry", path.Join(dir, hash)))
 
@@ -98,30 +109,30 @@ func byHashComplete(releaseDir string, sets map[string]map[string]bool) bool {
 	return true
 }
 
-// linkByHash publishes every checksum of every index as a hard link to the
-// index itself, so that a client which read a release can still fetch what it
-// names after a later build has replaced the index. One inode holds the
-// content however many names point at it.
-func linkByHash(releaseDir string, sums []hashsum.Sums) error {
+// linkByHash publishes every checksum of every index as a second name serving
+// the index itself, so that a client which read a release can still fetch what
+// it names after a later build has replaced the index. Locally that is a hard
+// link: one inode holds the content however many names point at it.
+func linkByHash(fsys repofs.FS, releaseDir string, sums []hashsum.Sums) error {
 	for _, s := range sums {
-		indicePath := filepath.Join(releaseDir, filepath.FromSlash(s.Path))
+		indicePath := path.Join(releaseDir, s.Path)
 
 		for _, digest := range s.Digests() {
-			dir := filepath.Join(releaseDir, filepath.FromSlash(byHashDir(s.Path, digest.Algorithm)))
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+			dir := path.Join(releaseDir, byHashDir(s.Path, digest.Algorithm))
+			if err := fsys.MkdirAll(dir); err != nil {
 				return fmt.Errorf("failed to create by-hash directory: %w", err)
 			}
 
-			entryPath := filepath.Join(dir, digest.Hash)
-			if _, err := os.Stat(entryPath); err == nil {
+			entryPath := path.Join(dir, digest.Hash)
+			if _, err := fsys.Stat(entryPath); err == nil {
 				// The name is the digest of the content, so an entry that is
 				// already there holds exactly these bytes.
 				continue
-			} else if !errors.Is(err, os.ErrNotExist) {
+			} else if !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("failed to stat by-hash entry: %w", err)
 			}
 
-			if err := os.Link(indicePath, entryPath); err != nil {
+			if err := fsys.Clone(indicePath, entryPath); err != nil {
 				return fmt.Errorf("failed to link by-hash entry: %w", err)
 			}
 		}
@@ -137,10 +148,10 @@ func linkByHash(releaseDir string, sums []hashsum.Sums) error {
 // predecessor of an index that had sat unchanged for a month the moment it
 // changed. Entries named by neither release are removed once they are older
 // than the retention window.
-func pruneByHash(releaseDir string, current, previous map[string]map[string]bool, retention stdtime.Duration) error {
+func pruneByHash(fsys repofs.FS, releaseDir string, current, previous map[string]map[string]bool, retention stdtime.Duration) error {
 	now := stdtime.Now()
 
-	err := filepath.WalkDir(releaseDir, func(dirPath string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, releaseDir, func(dirPath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -149,7 +160,7 @@ func pruneByHash(releaseDir string, current, previous map[string]map[string]bool
 			return nil
 		}
 
-		algorithms, err := os.ReadDir(dirPath)
+		algorithms, err := fsys.ReadDir(dirPath)
 		if err != nil {
 			return err
 		}
@@ -159,15 +170,13 @@ func pruneByHash(releaseDir string, current, previous map[string]map[string]bool
 				continue
 			}
 
-			algorithmDir := filepath.Join(dirPath, algorithm.Name())
+			algorithmDir := path.Join(dirPath, algorithm.Name())
 
-			relativeDir, err := filepath.Rel(releaseDir, algorithmDir)
-			if err != nil {
-				return err
-			}
-			key := filepath.ToSlash(relativeDir)
+			// The by-hash sets are keyed relative to the release directory,
+			// which is what a Release file names its indices by.
+			key := relativeName(releaseDir, algorithmDir)
 
-			entries, err := os.ReadDir(algorithmDir)
+			entries, err := fsys.ReadDir(algorithmDir)
 			if err != nil {
 				return err
 			}
@@ -177,11 +186,11 @@ func pruneByHash(releaseDir string, current, previous map[string]map[string]bool
 					continue
 				}
 
-				entryPath := filepath.Join(algorithmDir, entry.Name())
+				entryPath := path.Join(algorithmDir, entry.Name())
 
 				if previous[key][entry.Name()] {
 					// Superseded by this build: start its retention window now.
-					if err := os.Chtimes(entryPath, stdtime.Time{}, now); err != nil {
+					if err := fsys.Chtimes(entryPath, now); err != nil {
 						return fmt.Errorf("failed to touch superseded by-hash entry: %w", err)
 					}
 
@@ -200,7 +209,7 @@ func pruneByHash(releaseDir string, current, previous map[string]map[string]bool
 				slog.Info("Removing expired by-hash entry",
 					slog.String("entry", path.Join(key, entry.Name())))
 
-				if err := os.Remove(entryPath); err != nil {
+				if err := fsys.Remove(entryPath); err != nil {
 					return fmt.Errorf("failed to remove expired by-hash entry: %w", err)
 				}
 			}
@@ -217,8 +226,8 @@ func pruneByHash(releaseDir string, current, previous map[string]map[string]bool
 
 // removeByHash deletes every by-hash tree under a release, which is what
 // turning the feature off has to do once the release no longer advertises it.
-func removeByHash(releaseDir string) error {
-	err := filepath.WalkDir(releaseDir, func(dirPath string, d fs.DirEntry, err error) error {
+func removeByHash(fsys repofs.FS, releaseDir string) error {
+	err := fs.WalkDir(fsys, releaseDir, func(dirPath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -229,7 +238,7 @@ func removeByHash(releaseDir string) error {
 
 		slog.Info("Removing by-hash directory", slog.String("dir", dirPath))
 
-		if err := os.RemoveAll(dirPath); err != nil {
+		if err := fsys.RemoveAll(dirPath); err != nil {
 			return fmt.Errorf("failed to remove by-hash directory: %w", err)
 		}
 

@@ -21,10 +21,9 @@ package repo
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 
 	"oaklab.hu/debian/aptify/internal/hashsum"
@@ -86,7 +85,7 @@ func (b *build) prune() error {
 // prune so no pool file about to be deleted is hashed, and after the ingest so
 // every Filename resolves.
 func (b *build) backfill() error {
-	backfilled, err := backfillPackageDigests(b.repoDir, b.packages)
+	backfilled, err := b.backfillPackageDigests()
 	if err != nil {
 		return fmt.Errorf("failed to backfill package digests: %w", err)
 	}
@@ -115,7 +114,7 @@ func (b *build) collectPoolGarbage() error {
 
 		slog.Info("Removing unused file from pool",
 			slog.String("file", poolPath))
-		if err := os.Remove(filepath.Join(b.repoDir, poolPath)); err != nil {
+		if err := b.fsys.Remove(poolPath); err != nil {
 			return fmt.Errorf("failed to remove unused package file: %w", err)
 		}
 	}
@@ -192,15 +191,15 @@ func surplusVersions(versionsForArch map[string][]types.Package, maxVersions int
 // be rewritten as a result. The ingest keeps the stanza it already has for a
 // package whose file is unchanged, so this is the only route by which an
 // existing repository gains the fields.
-func backfillPackageDigests(repoDir string, packagesForReleaseComponent map[string][]types.Package) (map[string]bool, error) {
+func (b *build) backfillPackageDigests() (map[string]bool, error) {
 	backfilled := make(map[string]bool)
 
 	// A pool file is shared by every component listing the package, so it is
 	// only ever hashed once.
 	sumsForPoolPath := make(map[string]hashsum.Sums)
 
-	for _, releaseComponent := range slices.Sorted(maps.Keys(packagesForReleaseComponent)) {
-		packages := packagesForReleaseComponent[releaseComponent]
+	for _, releaseComponent := range slices.Sorted(maps.Keys(b.packages)) {
+		packages := b.packages[releaseComponent]
 
 		for i := range packages {
 			pkg := &packages[i]
@@ -217,8 +216,8 @@ func backfillPackageDigests(repoDir string, packagesForReleaseComponent map[stri
 			sums, ok := sumsForPoolPath[pkg.Filename]
 			if !ok {
 				var err error
-				sums, err = hashsum.File(filepath.Join(repoDir, pkg.Filename))
-				if errors.Is(err, os.ErrNotExist) {
+				sums, err = hashsum.File(b.fsys, pkg.Filename)
+				if errors.Is(err, fs.ErrNotExist) {
 					// A repository missing a pool file builds today, so this
 					// stays a warning: the stanza keeps the checksums it has.
 					slog.Warn("Package file missing from pool, leaving its checksums as published",

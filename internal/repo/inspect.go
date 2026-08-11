@@ -22,31 +22,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"slices"
 
+	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/types"
 )
 
 // Inspect writes every package the repository publishes to w as JSON.
-func Inspect(repoDir string, w io.Writer) error {
-	if dir, err := os.Stat(repoDir); err != nil || !dir.IsDir() {
-		return fmt.Errorf("repository directory does not exist: %s", repoDir)
+func Inspect(fsys repofs.FS, w io.Writer) error {
+	if dir, err := fsys.Stat("."); err != nil || !dir.IsDir() {
+		return fmt.Errorf("repository directory does not exist: %s", fsys.Name())
 	}
 
-	files, err := filepath.Glob(filepath.Join(repoDir, "dists", "*", "*", "binary-*", "Packages"))
+	files, err := fsys.Glob(packagesIndiceGlob)
 	if err != nil {
 		return fmt.Errorf("failed to find Packages files: %w", err)
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("no Packages files found in repository directory: %s", repoDir)
+		return fmt.Errorf("no Packages files found in repository directory: %s", fsys.Name())
 	}
 
 	var packages []types.Package
 
 	for _, file := range files {
-		candidates, err := readPackagesFile(file)
+		candidates, err := readPackagesFile(fsys, file)
 		if err != nil {
 			return err
 		}

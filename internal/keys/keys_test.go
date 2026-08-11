@@ -68,6 +68,33 @@ func TestWritePrivateAndLoad(t *testing.T) {
 	assert.NotNil(t, loaded.PrivateKey)
 }
 
+// The tests above generate a small key so that they cost nothing, so the size
+// the CLI actually generates is only exercised here: init-keys has to produce
+// a 4096 bit signing key that survives the round trip through the armored
+// file it stores it in.
+func TestGenerateFullSizeRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generating a 4096 bit key takes seconds")
+	}
+
+	entity, err := Generate("Test User", "", "test@example.com")
+	require.NoError(t, err)
+
+	bitLength, err := entity.PrimaryKey.BitLength()
+	require.NoError(t, err)
+	assert.Equal(t, uint16(4096), bitLength)
+
+	path := filepath.Join(t.TempDir(), "aptify_private.asc")
+	require.NoError(t, WritePrivate(path, entity))
+
+	loaded, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PrimaryKey.Fingerprint, loaded.PrimaryKey.Fingerprint)
+
+	_, ok := loaded.SigningKey(time.Now())
+	assert.True(t, ok, "the stored key cannot sign a release")
+}
+
 // A missing or malformed key file has to be reported, not silently accepted.
 func TestLoadErrors(t *testing.T) {
 	dir := t.TempDir()

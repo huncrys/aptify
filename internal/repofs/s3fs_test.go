@@ -26,6 +26,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"oaklab.hu/debian/aptify/internal/repofs"
@@ -243,6 +246,112 @@ func TestS3Remove(t *testing.T) {
 	// Only that prefix, and nothing that merely starts with the same letters.
 	_, err = fsys.Stat("dists/bookworm/main/binary-amd64/Packages")
 	assert.NoError(t, err)
+}
+
+// TestS3RemoveAllToleratesMissingKeys covers the implementations that answer a
+// delete of a key that is not there with an error rather than with a success.
+// RemoveAll batches the name's own key in with the listing, and that key is not
+// an object at all when the name is only a prefix, which is every directory the
+// pipeline removes.
+func TestS3RemoveAllToleratesMissingKeys(t *testing.T) {
+	backend := newTestBackend(t)
+	fsys := repofs.NewS3(context.Background(), &strictDeleteClient{S3API: backend.client}, backend.bucket, "")
+
+	for _, name := range []string{
+		"dists/bookworm/main/binary-all/Packages",
+		"dists/bookworm/main/binary-all/by-hash/SHA256/cafebabe",
+		"dists/bookworm/main/binary-amd64/Packages",
+	} {
+		require.NoError(t, fsys.WriteFile(name, []byte(name), 0o644, time.Time{}))
+	}
+
+	require.NoError(t, fsys.RemoveAll("dists/bookworm/main/binary-all"))
+
+	_, err := fsys.Stat("dists/bookworm/main/binary-all")
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+
+	_, err = fsys.Stat("dists/bookworm/main/binary-amd64/Packages")
+	assert.NoError(t, err)
+
+	// Removing what was never published is a no-op, the same as os.RemoveAll.
+	require.NoError(t, fsys.RemoveAll("dists/bookworm/main/binary-all"))
+}
+
+// TestS3RemoveAllReportsRealErrors is the other half: tolerating a missing key
+// must not swallow a delete that genuinely failed.
+func TestS3RemoveAllReportsRealErrors(t *testing.T) {
+	backend := newTestBackend(t)
+	client := &strictDeleteClient{S3API: backend.client, failCode: "AccessDenied"}
+	fsys := repofs.NewS3(context.Background(), client, backend.bucket, "")
+
+	require.NoError(t, fsys.WriteFile("dists/bookworm/main/binary-all/Packages", []byte("body"), 0o644, time.Time{}))
+
+	err := fsys.RemoveAll("dists/bookworm/main/binary-all")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AccessDenied")
+	assert.Contains(t, err.Error(), "dists/bookworm/main/binary-all/Packages")
+}
+
+// strictDeleteClient answers a batched delete the way the implementations that
+// do not follow Amazon here do: a key that is not there comes back as a
+// NoSuchKey error entry instead of being reported as deleted. With failCode set
+// every key fails with that code instead, which is what a delete that really
+// went wrong looks like.
+type strictDeleteClient struct {
+	repofs.S3API
+
+	failCode string
+}
+
+func (c *strictDeleteClient) DeleteObjects(ctx context.Context, in *s3.DeleteObjectsInput,
+	opts ...func(*s3.Options),
+) (*s3.DeleteObjectsOutput, error) {
+	var (
+		present  []s3types.ObjectIdentifier
+		failures []s3types.Error
+	)
+
+	for _, object := range in.Delete.Objects {
+		if c.failCode != "" {
+			failures = append(failures, s3types.Error{
+				Key:     object.Key,
+				Code:    aws.String(c.failCode),
+				Message: aws.String("delete refused"),
+			})
+
+			continue
+		}
+
+		if _, err := c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: in.Bucket, Key: object.Key}); err != nil {
+			failures = append(failures, s3types.Error{
+				Key:     object.Key,
+				Code:    aws.String("NoSuchKey"),
+				Message: aws.String("key not found"),
+			})
+
+			continue
+		}
+
+		present = append(present, object)
+	}
+
+	out := &s3.DeleteObjectsOutput{}
+
+	if len(present) > 0 {
+		var err error
+
+		out, err = c.S3API.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: in.Bucket,
+			Delete: &s3types.Delete{Objects: present, Quiet: in.Delete.Quiet},
+		}, opts...)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	out.Errors = append(out.Errors, failures...)
+
+	return out, nil
 }
 
 // TestS3Prefix pins that a repository below a key prefix stays inside it: the

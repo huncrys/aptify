@@ -321,7 +321,8 @@ func (s *s3FS) Remove(name string) error {
 }
 
 // RemoveAll deletes the name and everything below it, a thousand keys per
-// request.
+// request. The name's own key goes into the batch and normally does not exist,
+// so an error entry saying so is not a failure.
 func (s *s3FS) RemoveAll(name string) error {
 	key, err := s.key(name)
 	if err != nil {
@@ -361,7 +362,17 @@ func (s *s3FS) RemoveAll(name string) error {
 		}
 
 		for _, failure := range out.Errors {
-			return fmt.Errorf("failed to remove %s: %s", aws.ToString(failure.Key), aws.ToString(failure.Message))
+			// Deleting a key that is not there is a no-op by this package's
+			// contract, as it is for os.RemoveAll, and the name's own key is
+			// exactly that whenever the name is only a prefix. Amazon answers
+			// such a delete with a success; other implementations report a
+			// NoSuchKey error entry for it.
+			if aws.ToString(failure.Code) == "NoSuchKey" {
+				continue
+			}
+
+			return fmt.Errorf("failed to remove %s: %s: %s", aws.ToString(failure.Key),
+				aws.ToString(failure.Code), aws.ToString(failure.Message))
 		}
 	}
 

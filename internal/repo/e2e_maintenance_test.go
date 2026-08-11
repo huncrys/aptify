@@ -115,30 +115,32 @@ func TestChangelogsFallBackToPlaceholder(t *testing.T) {
 	assert.Contains(t, string(body), "  * No changelog available.")
 }
 
-// TestChangelogsSkipSymlinkedDocDirectories pins what a dbgsym package does to
-// the changelog of the binary package it was built from. Both are filed under
-// the source package and version, so they compete for one path, and the first
-// stanza of the component wins it. A dbgsym's documentation directory is a
-// symlink, which is an error rather than a missing changelog, so when it wins
-// nothing is published at all - not even a placeholder.
-func TestChangelogsSkipSymlinkedDocDirectories(t *testing.T) {
+// TestChangelogsPreferTheSourceNamedPackage pins which of the binary packages
+// of one source provides the single changelog they all map onto: the one named
+// after the source, whatever order the component lists them in. A dbgsym ships
+// its documentation directory as a symlink, so letting it win would cost the
+// real changelog; on its own there is nothing to extract and the placeholder is
+// what keeps the advertised URL resolvable.
+func TestChangelogsPreferTheSourceNamedPackage(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		packages  []string
-		published bool
+		name        string
+		packages    []string
+		wantChanges string
 	}{
 		{
-			name:     "dbgsym alone",
-			packages: []string{"hello-world-dbgsym_1.0_amd64.deb"},
+			name:        "dbgsym alone",
+			packages:    []string{"hello-world-dbgsym_1.0_amd64.deb"},
+			wantChanges: "  * No changelog available.",
 		},
 		{
-			name:      "binary package listed first",
-			packages:  []string{"hello-world_1.0_amd64.deb", "hello-world-dbgsym_1.0_amd64.deb"},
-			published: true,
+			name:        "binary package listed first",
+			packages:    []string{"hello-world_1.0_amd64.deb", "hello-world-dbgsym_1.0_amd64.deb"},
+			wantChanges: "  * Initial release.",
 		},
 		{
-			name:     "dbgsym listed first",
-			packages: []string{"hello-world-dbgsym_1.0_amd64.deb", "hello-world_1.0_amd64.deb"},
+			name:        "dbgsym listed first",
+			packages:    []string{"hello-world-dbgsym_1.0_amd64.deb", "hello-world_1.0_amd64.deb"},
+			wantChanges: "  * Initial release.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,14 +153,39 @@ func TestChangelogsSkipSymlinkedDocDirectories(t *testing.T) {
 
 			mustBuild(t, repoDir, writeTestConfig(t, changelogConfig(0, packages...)), false, false)
 
-			published := changelogPath(repoDir, "hello-world", "1.0")
-			if tc.published {
-				assert.FileExists(t, published)
-			} else {
-				assert.NoFileExists(t, published)
-			}
+			// Named from the source, so the dbgsym publishes nothing of its own.
+			assert.NoFileExists(t, changelogPath(repoDir, "hello-world-dbgsym", "1.0"))
+
+			body, err := os.ReadFile(changelogPath(repoDir, "hello-world", "1.0"))
+			require.NoError(t, err)
+
+			assert.Contains(t, string(body), "hello-world (1.0) unstable; urgency=medium")
+			assert.Contains(t, string(body), tc.wantChanges)
 		})
 	}
+}
+
+// TestChangelogsSkipMissingPoolFiles pins the one case that publishes nothing:
+// a package whose .deb has gone from the pool cannot be read, which is not the
+// same as it shipping no changelog, and a placeholder would assert that the
+// version has nothing to report.
+func TestChangelogsSkipMissingPoolFiles(t *testing.T) {
+	repoDir := t.TempDir()
+
+	confPath := writeTestConfig(t, changelogConfig(0, debPath(t, "hello-world_1.0_amd64.deb")))
+	mustBuild(t, repoDir, confPath, false, false)
+
+	published := changelogPath(repoDir, "hello-world", "1.0")
+	require.FileExists(t, published)
+	require.NoError(t, os.Remove(published))
+
+	packages := packagesIn(t, repoDir, "amd64")
+	require.Len(t, packages, 1)
+	require.NoError(t, os.Remove(filepath.Join(repoDir, filepath.FromSlash(packages[0].Filename))))
+
+	mustBuild(t, repoDir, confPath, false, false)
+
+	assert.NoFileExists(t, published)
 }
 
 // TestChangelogsPruneUnreferenced pins the sweep: the changelog of a version

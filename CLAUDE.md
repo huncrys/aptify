@@ -183,15 +183,18 @@ build does not churn a mirrored repository.
 
 `deb.GetPackageChangelog` walks the package's `data.tar`, trying
 `usr/share/doc/{name,source}/changelog{.Debian,}.gz`; a symlinked doc directory returns
-`ErrChangelogSymlink`. Only a *missing* changelog (`os.IsNotExist`) falls back to
-`placeholderChangelog`, which writes one synthetic entry through `deb822/changelog` so
-the `Changelogs:` URL advertised in the Release file still resolves to something apt can
-parse; `ErrChangelogSymlink` merely warns and writes nothing. Changelog paths are keyed
-by *source* package, so a dbgsym stanza processed before its binary package suppresses
-that build's changelog for both (the next build self-heals: packages reload from the
-sorted indices, where the binary name sorts first) - pinned as current behaviour by
-`TestChangelogsSkipSymlinkedDocDirectories`, not endorsed. The placeholder's exact
-output is pinned
+`ErrChangelogSymlink`, and a `.deb` that cannot be opened at all `ErrPackageUnreadable`.
+Both "nothing to extract" cases - a missing changelog (`os.ErrNotExist`) and the symlink -
+fall back to `placeholderChangelog`, which writes one synthetic entry through
+`deb822/changelog` so the `Changelogs:` URL advertised in the Release file still resolves
+to something apt can parse; both carry the `.deb`'s own mtime, which is what dates the
+published file. `ErrPackageUnreadable` is the one case that warns and publishes nothing:
+a vanished pool file is not a package without a changelog, and a placeholder would assert
+the version has nothing to report. Changelog paths are keyed by *source* package, so
+every binary package of one source competes for a single file; `preferChangelogSource`
+picks the one named after the source, else the lexicographically smallest name, so a
+dbgsym (whose doc directory is a symlink) never shadows the real changelog whatever order
+the component lists them in. The placeholder's exact output is pinned
 by `changelog_placeholder_test.go` - published changelogs must not change shape.
 Changelog files are named from the *source* package and version without epoch, and unused
 `.changelog` files are pruned by walking `changelogs/`.

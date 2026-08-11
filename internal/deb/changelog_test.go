@@ -89,7 +89,9 @@ func TestGetPackageChangelog(t *testing.T) {
 
 // Pins the ErrChangelogSymlink contract: the dbgsym packages ship
 // usr/share/doc/hello-world-dbgsym as a symlink to the parent package's doc
-// directory, which the walker refuses to follow.
+// directory, which the walker refuses to follow. There is still nothing to
+// extract, so the caller gets the same usable timestamp it gets for a package
+// shipping no changelog at all, and writes the same placeholder.
 func TestGetPackageChangelogSymlinkedDocDirectory(t *testing.T) {
 	for _, file := range []string{
 		"hello-world-dbgsym_1.0_amd64.deb",
@@ -98,15 +100,21 @@ func TestGetPackageChangelogSymlinkedDocDirectory(t *testing.T) {
 		"hello-world-dbgsym_2.0_arm64.deb",
 	} {
 		t.Run(file, func(t *testing.T) {
-			data, modTime, err := deb.GetPackageChangelog("hello-world", "hello-world-dbgsym", fixture(file))
+			path := fixture(file)
+
+			info, err := os.Stat(path)
+			require.NoError(t, err)
+
+			data, modTime, err := deb.GetPackageChangelog("hello-world", "hello-world-dbgsym", path)
 			require.Error(t, err)
 
 			assert.True(t, errors.Is(err, deb.ErrChangelogSymlink), "got %v", err)
 			assert.Nil(t, data)
-			assert.True(t, modTime.IsZero())
+			assert.True(t, info.ModTime().Equal(modTime), "want the .deb mtime %s, got %s", info.ModTime(), modTime)
 
-			// A symlink is not a missing changelog: the caller must not mistake
-			// it for the placeholder case.
+			// The package itself read fine, which is what tells the caller a
+			// placeholder is the right answer.
+			assert.False(t, errors.Is(err, deb.ErrPackageUnreadable))
 			assert.False(t, os.IsNotExist(err))
 		})
 	}
@@ -127,6 +135,7 @@ func TestGetPackageChangelogNotFound(t *testing.T) {
 
 	assert.True(t, os.IsNotExist(err), "got %v", err)
 	assert.True(t, errors.Is(err, os.ErrNotExist), "got %v", err)
+	assert.False(t, errors.Is(err, deb.ErrPackageUnreadable))
 	assert.Nil(t, data)
 	assert.False(t, modTime.IsZero())
 	assert.True(t, info.ModTime().Equal(modTime), "want the .deb mtime %s, got %s", info.ModTime(), modTime)
@@ -142,10 +151,14 @@ func TestGetPackageChangelogErrors(t *testing.T) {
 		assert.False(t, os.IsNotExist(err))
 	})
 
+	// A package that cannot be opened at all is reported apart from one that
+	// ships no changelog, so that a vanished pool file gets no placeholder
+	// claiming the version has nothing to report.
 	t.Run("nonexistent file", func(t *testing.T) {
 		_, _, err := deb.GetPackageChangelog("hello-world", "hello-world", fixture("no-such-package_9.9_amd64.deb"))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to open package file")
+		assert.True(t, errors.Is(err, deb.ErrPackageUnreadable), "got %v", err)
+		assert.Contains(t, err.Error(), "package file cannot be opened")
 	})
 
 	t.Run("unsupported package version", func(t *testing.T) {

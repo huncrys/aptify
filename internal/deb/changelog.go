@@ -32,12 +32,19 @@ import (
 	"github.com/dpeckett/uncompr"
 )
 
-var ErrChangelogSymlink = errors.New("changelog folder is a symlink")
+var (
+	ErrChangelogSymlink = errors.New("changelog folder is a symlink")
+
+	// ErrPackageUnreadable reports that the package file itself could not be
+	// opened, which is not the same as it shipping no changelog: the caller
+	// publishes a placeholder for the latter and must not for this.
+	ErrPackageUnreadable = errors.New("package file cannot be opened")
+)
 
 func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to open package file: %w", err)
+		return nil, time.Time{}, fmt.Errorf("%w: %w", ErrPackageUnreadable, err)
 	}
 	defer f.Close()
 
@@ -118,7 +125,7 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 				for _, linkcandidate := range []string{filepath.Dir(candidate), candidate} {
 					if stat, err := dataArchiveFS.StatLink(linkcandidate); err == nil {
 						if stat.Mode()&os.ModeSymlink != 0 {
-							return nil, time.Time{}, ErrChangelogSymlink
+							return nil, packageModTime(f), ErrChangelogSymlink
 						}
 					}
 				}
@@ -145,10 +152,16 @@ func GetPackageChangelog(source, name, path string) ([]byte, time.Time, error) {
 		}
 	}
 
-	modTime := time.Now()
+	return nil, packageModTime(f), os.ErrNotExist
+}
+
+// packageModTime dates the placeholder the caller writes when the archive holds
+// no changelog it can publish, so that the published file does not carry the
+// time of the build.
+func packageModTime(f *os.File) time.Time {
 	if stat, err := f.Stat(); err == nil {
-		modTime = stat.ModTime()
+		return stat.ModTime()
 	}
 
-	return nil, modTime, os.ErrNotExist
+	return time.Now()
 }

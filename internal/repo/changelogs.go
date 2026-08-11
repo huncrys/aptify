@@ -20,6 +20,7 @@ package repo
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -95,9 +96,11 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 		component := strings.Split(releaseComponent, "/")[1]
 		for _, pkg := range releasePkgs {
 			path := changelogPathForPackage(component, &pkg)
-			if _, ok := packages[path]; !ok {
-				packages[path] = pkg
+			if current, ok := packages[path]; ok && !preferChangelogSource(&pkg, &current) {
+				continue
 			}
+
+			packages[path] = pkg
 		}
 	}
 
@@ -115,22 +118,13 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 		if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
 			slog.Info("Creating changelog file", slog.String("file", changelogPath))
 
-			pkgSource := ""
-			pkgVer := &pkg.Version
-			if pkg.Source != nil && pkg.Source.Name != "" {
-				pkgSource = pkg.Source.Name
-				if pkg.Source.Version != nil {
-					pkgVer = pkg.Source.Version
-				}
-			}
-			sourceOrName := pkgSource
-			if sourceOrName == "" {
-				sourceOrName = strings.TrimSpace(pkg.Name)
-			}
-			changelogData, changelogTime, err := deb.GetPackageChangelog(sourceOrName, pkg.Name, filepath.Join(repoDir, pkg.Filename))
+			pkgSource, pkgVer := changelogSource(&pkg)
+
+			changelogData, changelogTime, err := deb.GetPackageChangelog(pkgSource, pkg.Name, filepath.Join(repoDir, pkg.Filename))
 			if err != nil {
-				if !os.IsNotExist(err) {
-					slog.Warn("Failed to get package changelog",
+				switch {
+				case errors.Is(err, deb.ErrPackageUnreadable):
+					slog.Warn("Package file is unreadable, skipping changelog",
 						slog.String("package", pkg.Name),
 						slog.String("version", pkg.Version.String()),
 						slog.String("architecture", pkg.Architecture.String()),
@@ -138,17 +132,32 @@ func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]ty
 					)
 
 					continue
-				}
+				case errors.Is(err, deb.ErrChangelogSymlink), errors.Is(err, os.ErrNotExist):
+					reason := "the package ships none"
+					if errors.Is(err, deb.ErrChangelogSymlink) {
+						reason = "the documentation directory is a symlink"
+					}
 
-				slog.Warn("Changelog not found, generating dummy changelog",
-					slog.String("package", pkg.Name),
-					slog.String("version", pkg.Version.String()),
-					slog.String("architecture", pkg.Architecture.String()),
-				)
+					slog.Warn("Generating placeholder changelog",
+						slog.String("package", pkg.Name),
+						slog.String("version", pkg.Version.String()),
+						slog.String("architecture", pkg.Architecture.String()),
+						slog.String("reason", reason),
+					)
 
-				changelogData, err = placeholderChangelog(sourceOrName, *pkgVer, pkg.Maintainer, changelogTime)
-				if err != nil {
-					slog.Warn("Failed to generate dummy changelog",
+					changelogData, err = placeholderChangelog(pkgSource, *pkgVer, pkg.Maintainer, changelogTime)
+					if err != nil {
+						slog.Warn("Failed to generate placeholder changelog",
+							slog.String("package", pkg.Name),
+							slog.String("version", pkg.Version.String()),
+							slog.String("architecture", pkg.Architecture.String()),
+							slog.String("error", err.Error()),
+						)
+
+						continue
+					}
+				default:
+					slog.Warn("Failed to get package changelog",
 						slog.String("package", pkg.Name),
 						slog.String("version", pkg.Version.String()),
 						slog.String("architecture", pkg.Architecture.String()),
@@ -210,17 +219,45 @@ func placeholderChangelog(source string, pkgVer version.Version, maintainer stri
 	return buf.Bytes(), nil
 }
 
-func changelogPathForPackage(componentName string, pkg *types.Package) string {
-	var pkgSource string
-	pkgVer := &pkg.Version
+// changelogSource is the source package a changelog is filed under and the
+// version it is published at: the Source field when the package names one,
+// otherwise the binary package standing in for its own source.
+func changelogSource(pkg *types.Package) (string, *version.Version) {
 	if pkg.Source != nil && pkg.Source.Name != "" {
-		pkgSource = pkg.Source.Name
 		if pkg.Source.Version != nil {
-			pkgVer = pkg.Source.Version
+			return pkg.Source.Name, pkg.Source.Version
 		}
-	} else {
-		pkgSource = strings.TrimSpace(pkg.Name)
+
+		return pkg.Source.Name, &pkg.Version
 	}
+
+	return strings.TrimSpace(pkg.Name), &pkg.Version
+}
+
+// preferChangelogSource reports whether candidate should provide the changelog
+// of a path current already holds. Every binary package of one source maps onto
+// the single changelog file of that source, so the winner has to be decided on
+// the packages rather than on the order they happened to be read in: the
+// package carrying the source's own name ships the changelog, and a -dbgsym,
+// whose documentation directory is a symlink, must never shadow it.
+func preferChangelogSource(candidate, current *types.Package) bool {
+	source, _ := changelogSource(candidate)
+
+	candidateName := strings.TrimSpace(candidate.Name)
+	currentName := strings.TrimSpace(current.Name)
+
+	if candidateName == currentName || currentName == source {
+		return false
+	}
+	if candidateName == source {
+		return true
+	}
+
+	return candidateName < currentName
+}
+
+func changelogPathForPackage(componentName string, pkg *types.Package) string {
+	pkgSource, pkgVer := changelogSource(pkg)
 
 	prefix := pkgSource[:1]
 	if strings.HasPrefix(pkgSource, "lib") {

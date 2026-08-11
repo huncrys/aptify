@@ -38,7 +38,6 @@ import (
 	stdtime "time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/adrg/xdg"
@@ -50,6 +49,7 @@ import (
 	"oaklab.hu/debian/aptify/internal/constants"
 	"oaklab.hu/debian/aptify/internal/deb"
 	"oaklab.hu/debian/aptify/internal/hashsum"
+	"oaklab.hu/debian/aptify/internal/keys"
 	"oaklab.hu/debian/aptify/internal/util"
 	"oaklab.hu/debian/deb822"
 	"oaklab.hu/debian/deb822/changelog"
@@ -114,42 +114,18 @@ func main() {
 				},
 				Before: util.BeforeAll(initLogger, initConfDir),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					entityConfig := &packet.Config{
-						RSABits: 4096,
-						Time:    stdtime.Now,
-					}
-
 					slog.Info("Generating RSA key")
 
-					// Create a new entity.
-					entity, err := openpgp.NewEntity(cmd.String("name"), cmd.String("comment"), cmd.String("email"), entityConfig)
+					entity, err := keys.Generate(cmd.String("name"), cmd.String("comment"), cmd.String("email"))
 					if err != nil {
-						return fmt.Errorf("failed to create entity: %w", err)
-					}
-
-					slog.Info("Saving key pair", slog.String("dir", cmd.String("config-dir")))
-
-					// Serialize the private key.
-					var privateKey bytes.Buffer
-					privateKeyWriter, err := armor.Encode(&privateKey, openpgp.PrivateKeyType, nil)
-					if err != nil {
-						return fmt.Errorf("failed to encode private key: %w", err)
-					}
-					if err := entity.SerializePrivate(privateKeyWriter, nil); err != nil {
-						return fmt.Errorf("failed to serialize private key: %w", err)
-					}
-					if err := privateKeyWriter.Close(); err != nil {
-						return fmt.Errorf("failed to close private key writer: %w", err)
+						return err
 					}
 
 					confDir := cmd.String("config-dir")
 
-					// Write private key to file.
-					if err := os.WriteFile(filepath.Join(confDir, "aptify_private.asc"), privateKey.Bytes(), 0o600); err != nil {
-						return fmt.Errorf("failed to write private key: %w", err)
-					}
+					slog.Info("Saving key pair", slog.String("dir", confDir))
 
-					return nil
+					return keys.WritePrivate(filepath.Join(confDir, "aptify_private.asc"), entity)
 				},
 			},
 			{
@@ -255,7 +231,7 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
 	}
 
-	privateKey, err := loadPrivateKey(privateKeyPath)
+	privateKey, err := keys.Load(privateKeyPath)
 	if err != nil {
 		return fmt.Errorf("failed to read private key: %w", err)
 	}
@@ -737,17 +713,8 @@ func buildRepository(repoDir, confPath, privateKeyPath string, force, reread boo
 	}
 	defer signingKeyFile.Close()
 
-	publicKeyWriter, err := armor.Encode(signingKeyFile, openpgp.PublicKeyType, nil)
-	if err != nil {
-		return fmt.Errorf("failed to encode public key: %w", err)
-	}
-
-	if err := privateKey.Serialize(publicKeyWriter); err != nil {
-		return fmt.Errorf("failed to serialize public key: %w", err)
-	}
-
-	if err := publicKeyWriter.Close(); err != nil {
-		return fmt.Errorf("failed to close public key writer: %w", err)
+	if err := keys.WritePublic(signingKeyFile, privateKey); err != nil {
+		return err
 	}
 
 	if stat, err := os.Stat(privateKeyPath); err == nil {
@@ -1824,21 +1791,6 @@ func changelogPathForPackage(componentName string, pkg *types.Package) string {
 	}
 
 	return filepath.Join(componentName, prefix, pkgSource, pkgSource+"_"+pkgVer.StringWithoutEpoch()+".changelog")
-}
-
-func loadPrivateKey(path string) (*openpgp.Entity, error) {
-	keyFile, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open private key: %w", err)
-	}
-	defer keyFile.Close()
-
-	keyRing, err := openpgp.ReadArmoredKeyRing(keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read armored key ring: %w", err)
-	}
-
-	return keyRing[0], nil
 }
 
 func inspectRepository(repoDir string) error {

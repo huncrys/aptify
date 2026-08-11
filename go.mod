@@ -10,6 +10,7 @@ require (
 	github.com/dpeckett/archivefs v0.11.1
 	github.com/dpeckett/uncompr v0.5.0
 	github.com/otiai10/copy v1.14.1
+	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.10.1
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	oaklab.hu/debian/deb822 v0.11.0
@@ -17,11 +18,14 @@ require (
 
 require (
 	github.com/cloudflare/circl v1.6.3 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/otiai10/mint v1.6.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.23 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

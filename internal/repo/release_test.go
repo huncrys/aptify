@@ -26,9 +26,11 @@ import (
 	"testing"
 	stdtime "time"
 
+	"github.com/stretchr/testify/assert"
 	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/deb822/types"
 	"oaklab.hu/debian/deb822/types/arch"
+	"oaklab.hu/debian/deb822/types/boolean"
 )
 
 // TestNoSupportForArchitectureAll covers the rule the field encodes:
@@ -59,6 +61,61 @@ func TestNoSupportForArchitectureAll(t *testing.T) {
 			if got := noSupportForArchitectureAll(architectures); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
+		})
+	}
+}
+
+// TestEqualAcquireByHash pins the comparison the release rewrite hangs on:
+// Acquire-By-Hash is absent rather than "no" when the feature is off, so a
+// missing field and a present one are different releases, while two fields with
+// the same value are not.
+func TestEqualAcquireByHash(t *testing.T) {
+	yes := boolean.Boolean(true)
+	alsoYes := boolean.Boolean(true)
+	no := boolean.Boolean(false)
+
+	for _, tc := range []struct {
+		name string
+		a, b *boolean.Boolean
+		want bool
+	}{
+		{"both absent", nil, nil, true},
+		{"absent and present", nil, &yes, false},
+		{"present and absent", &yes, nil, false},
+		{"absent and present false", nil, &no, false},
+		{"both true", &yes, &yes, true},
+		{"equal values behind different pointers", &yes, &alsoYes, true},
+		{"both false", &no, &no, true},
+		{"true and false", &yes, &no, false},
+		{"false and true", &no, &yes, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, equalAcquireByHash(tc.a, tc.b))
+		})
+	}
+}
+
+// TestByHashDir pins where an index's by-hash entries go: beside the index
+// itself, never in one tree per release. The Contents indice lives at component
+// level, so its entries do too, which is why the prune has to walk every
+// directory rather than only binary-*.
+func TestByHashDir(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		indicePath string
+		algorithm  string
+		want       string
+	}{
+		{"Packages", "main/binary-amd64/Packages", "SHA256", "main/binary-amd64/by-hash/SHA256"},
+		{"compressed Packages", "main/binary-amd64/Packages.gz", "SHA1", "main/binary-amd64/by-hash/SHA1"},
+		{"component Release stub", "main/binary-amd64/Release", "MD5Sum", "main/binary-amd64/by-hash/MD5Sum"},
+		{"Contents at component level", "main/Contents-amd64.gz", "MD5Sum", "main/by-hash/MD5Sum"},
+		{"an indice at the release root", "Packages", "SHA256", "by-hash/SHA256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The result is slash separated whatever the platform: it keys the
+			// by-hash sets a Release file is read back into.
+			assert.Equal(t, tc.want, byHashDir(tc.indicePath, tc.algorithm))
 		})
 	}
 }

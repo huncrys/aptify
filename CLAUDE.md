@@ -20,7 +20,7 @@ knowledge there and consuming it, which is what the recent history has been doin
 ```shell
 go build ./...
 go test ./...
-go test -run TestPlaceholderChangelog .   # single test
+go test -run TestPlaceholderChangelog ./internal/repo   # single test
 go vet ./...
 golangci-lint run                         # CI runs this only if the component's lint input is on
 ```
@@ -37,7 +37,17 @@ go run . inspect -d ./demo-repo | jq .
 
 `demo-repo/`, `repository/`, `.aptify/` and `dist/` are gitignored; `testdata/package/`
 holds `hello-world` 1.0/2.0 (amd64, arm64) and 3.0 (`all`) plus dbgsym packages, which is
-what exercises the arch-`all`, multi-version and source-package paths.
+what exercises the arch-`all`, multi-version and source-package paths. Note the three
+fixture versions ship identical file lists, so a test that needs `Contents` to differ
+between versions builds a synthetic `.deb` via `buildTestDeb` in
+`internal/repo/helpers_test.go` instead.
+
+Tests use testify. The e2e suite (`internal/repo/e2e_*.go`) drives `repo.Build`
+in-process against the fixtures, signing with the committed test key
+`testdata/keys/test_private.asc` (a fixture, deliberately public). The harness in
+`helpers_test.go` provides `verifyRepo` (decodes `InRelease` against that key and checks
+every listed checksum and compression variant) and `snapshotTree` (byte+mtime maps that
+pin the no-churn invariant).
 
 CI (`.gitlab-ci.yml`) is two `oaklab/ci-templates` components: `goreleaser-test`
 (gotestsum over `./...` with coverage) and `goreleaser-release`. Releases are cut by
@@ -46,8 +56,13 @@ pushing a `vX.Y.Z` tag; the version is stamped via ldflags into
 
 ## Architecture
 
-Almost all logic is `buildRepository` in `main.go`; `internal/` holds thin helpers.
-The build is a single pass over the config with these stages, in order:
+`main.go` is only the CLI (urfave/cli command tree, ~190 lines). The pipeline is
+`internal/repo`: `Build(Options)` in `build.go` constructs a `build` context holding the
+per-`"<release>/<component>"` package maps and runs one stage method per step below, one
+file per concern - `load.go`, `ingest.go`, `prune.go`, `indices.go`, `contents.go`,
+`release.go`, `byhash.go`, `changelogs.go`, `pool.go`, `file.go`, `inspect.go`. OpenPGP
+key generation/loading/writing is `internal/keys`, shared by the CLI, the pipeline and
+the tests. The build is a single pass over the config with these stages, in order:
 
 1. **Load existing state.** Every `dists/*/*/binary-*/Packages` is decoded back into
    `types.Package` and keyed by `"<release>/<component>"`. This is what makes builds
@@ -168,9 +183,15 @@ build does not churn a mirrored repository.
 
 `deb.GetPackageChangelog` walks the package's `data.tar`, trying
 `usr/share/doc/{name,source}/changelog{.Debian,}.gz`; a symlinked doc directory returns
-`ErrChangelogSymlink`. Missing changelogs fall back to `placeholderChangelog`, which
-writes one synthetic entry through `deb822/changelog` so the `Changelogs:` URL advertised
-in the Release file still resolves to something apt can parse. Its exact output is pinned
+`ErrChangelogSymlink`. Only a *missing* changelog (`os.IsNotExist`) falls back to
+`placeholderChangelog`, which writes one synthetic entry through `deb822/changelog` so
+the `Changelogs:` URL advertised in the Release file still resolves to something apt can
+parse; `ErrChangelogSymlink` merely warns and writes nothing. Changelog paths are keyed
+by *source* package, so a dbgsym stanza processed before its binary package suppresses
+that build's changelog for both (the next build self-heals: packages reload from the
+sorted indices, where the binary name sorts first) - pinned as current behaviour by
+`TestChangelogsSkipSymlinkedDocDirectories`, not endorsed. The placeholder's exact
+output is pinned
 by `changelog_placeholder_test.go` - published changelogs must not change shape.
 Changelog files are named from the *source* package and version without epoch, and unused
 `.changelog` files are pruned by walking `changelogs/`.

@@ -31,6 +31,98 @@ import (
 	"oaklab.hu/debian/deb822/types"
 )
 
+// prune drops the versions max_versions puts a component over, moving them
+// into the removed set the index writers read.
+func (b *build) prune() error {
+	for _, releaseConf := range b.conf.Releases {
+		for _, componentConf := range releaseConf.Components {
+			if componentConf.MaxVersions == 0 {
+				continue
+			}
+
+			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
+
+			// The versions of every package, by name and then architecture.
+			versions := make(map[string]map[string][]types.Package)
+			for _, pkg := range b.packages[releaseComponent] {
+				architecture := pkg.Architecture.String()
+
+				if versions[pkg.Name] == nil {
+					versions[pkg.Name] = make(map[string][]types.Package)
+				}
+
+				if !slices.ContainsFunc(versions[pkg.Name][architecture], func(existingPkg types.Package) bool {
+					return pkg.Compare(existingPkg) == 0
+				}) {
+					versions[pkg.Name][architecture] = append(versions[pkg.Name][architecture], pkg)
+				}
+			}
+
+			for _, name := range slices.Sorted(maps.Keys(versions)) {
+				for _, pkgToRemove := range surplusVersions(versions[name], int(componentConf.MaxVersions)) {
+					slog.Info("Removing old package version",
+						slog.String("name", pkgToRemove.Name),
+						slog.String("architecture", pkgToRemove.Architecture.String()),
+						slog.String("version", pkgToRemove.Version.String()),
+						slog.String("filename", pkgToRemove.Filename),
+					)
+
+					comparator := func(a types.Package) bool {
+						return a.Compare(pkgToRemove) == 0
+					}
+					b.packages[releaseComponent] = slices.DeleteFunc(b.packages[releaseComponent], comparator)
+					b.added[releaseComponent] = slices.DeleteFunc(b.added[releaseComponent], comparator)
+
+					b.removed[releaseComponent] = append(b.removed[releaseComponent], pkgToRemove)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// backfill fills in the fields older builds did not publish. It runs after the
+// prune so no pool file about to be deleted is hashed, and after the ingest so
+// every Filename resolves.
+func (b *build) backfill() error {
+	backfilled, err := backfillPackageDigests(b.repoDir, b.packages)
+	if err != nil {
+		return fmt.Errorf("failed to backfill package digests: %w", err)
+	}
+	b.backfilled = backfilled
+
+	return nil
+}
+
+// collectPoolGarbage deletes the pool files nothing published references any
+// more. The references are counted from the final package lists: counting them
+// as packages are read and pruned miscounts every package listed more than once
+// per component - an architecture `all` package is in every architecture's
+// indice, so removing it once left its file behind as permanently referenced.
+func (b *build) collectPoolGarbage() error {
+	poolReferences := make(map[string]int)
+	for _, packages := range b.packages {
+		for _, pkg := range packages {
+			poolReferences[pkg.Filename]++
+		}
+	}
+
+	for poolPath := range b.candidates {
+		if poolReferences[poolPath] > 0 {
+			continue
+		}
+
+		slog.Info("Removing unused file from pool",
+			slog.String("file", poolPath))
+		if err := os.Remove(filepath.Join(b.repoDir, poolPath)); err != nil {
+			return fmt.Errorf("failed to remove unused package file: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // surplusVersions returns the versions of one package that fall outside
 // maxVersions, given its versions by architecture. Architecture `all` packages
 // are folded into every architecture's indices, so they are judged as a client

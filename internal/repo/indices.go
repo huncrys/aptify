@@ -25,6 +25,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
 
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
 	"oaklab.hu/debian/deb822"
@@ -32,6 +35,159 @@ import (
 	"oaklab.hu/debian/deb822/types/arch"
 	"oaklab.hu/debian/deb822/types/boolean"
 )
+
+// writeIndices publishes the indices of every release, component and
+// architecture, then the release files that name them.
+func (b *build) writeIndices() error {
+	// Create release files.
+	for _, releaseConf := range b.conf.Releases {
+		var architectures []arch.Arch
+
+		modified := false
+
+		for _, componentConf := range releaseConf.Components {
+			releaseComponent := fmt.Sprintf("%s/%s", releaseConf.Name, componentConf.Name)
+			componentDir := filepath.Join(b.repoDir, "dists", releaseConf.Name, componentConf.Name)
+
+			// Architecture `all` packages go into every architecture's indices,
+			// so a separate `all` architecture only duplicates them. Earlier
+			// versions published one, and apt keeps fetching it for as long as
+			// the release advertises the architecture, so drop it here. It is
+			// kept when there is nothing to fold it into, as the component
+			// would otherwise have no indices at all.
+			componentArchs := b.archs[releaseComponent]
+
+			migrated := false
+			if len(componentArchs) > 1 && componentArchs[archAll.String()] {
+				delete(componentArchs, archAll.String())
+
+				var err error
+				migrated, err = removeArchIndices(componentDir, archAll.String())
+				if err != nil {
+					return err
+				}
+
+				// The release no longer publishes the indices it listed.
+				modified = modified || migrated
+			}
+
+			for architecture := range componentArchs {
+				architectures = append(architectures, arch.MustParse(architecture))
+
+				archDir := filepath.Join(componentDir, "binary-"+architecture)
+
+				if err := os.MkdirAll(archDir, 0o755); err != nil {
+					return fmt.Errorf("failed to create dists subdirectory: %w", err)
+				}
+
+				// The stub is rendered and compared on every build rather than
+				// gated on the incremental skip below, so a repository
+				// published before it existed heals itself.
+				stubWritten, err := writeComponentReleaseFile(archDir, releaseConf,
+					componentConf.Name, architecture, b.conf.ByHashEnabled())
+				if err != nil {
+					return fmt.Errorf("failed to write component Release file: %w", err)
+				}
+				modified = modified || stubWritten
+
+				packages := filterForArch(b.packages[releaseComponent], architecture)
+				newPackages := filterForArch(b.added[releaseComponent], architecture)
+				removedPackages := filterForArch(b.removed[releaseComponent], architecture)
+
+				// Whatever the dropped `all` indices held has to be folded in
+				// here, so a migrated component is rewritten from its full
+				// package list rather than incrementally.
+				writePackages := b.force || b.reread || migrated ||
+					b.backfilled[releaseComponent] ||
+					len(newPackages) > 0 || len(removedPackages) > 0
+
+				// A repository built before the uncompressed Contents indice
+				// was published has to be rewritten even when nothing changed,
+				// otherwise apt never acquires Contents at all.
+				writeContents := writePackages ||
+					!contentsIndiceComplete(componentDir, architecture)
+
+				if !writePackages && !writeContents {
+					slog.Info("Skipping index generation, no new or removed packages found",
+						slog.String("dir", archDir),
+					)
+
+					continue
+				}
+
+				sort.Slice(packages, func(i, j int) bool {
+					return packages[i].Compare(packages[j]) < 0
+				})
+				sort.Slice(newPackages, func(i, j int) bool {
+					return newPackages[i].Compare(newPackages[j]) < 0
+				})
+				sort.Slice(removedPackages, func(i, j int) bool {
+					return removedPackages[i].Compare(removedPackages[j]) < 0
+				})
+
+				if writePackages {
+					changed, err := writePackagesIndice(archDir, packages)
+					if err != nil {
+						return fmt.Errorf("failed to write package lists: %w", err)
+					}
+					modified = modified || changed
+				} else {
+					slog.Info("Skipping Packages indice generation, no new or removed packages found",
+						slog.String("dir", archDir),
+					)
+				}
+
+				if !writeContents {
+					slog.Info("Skipping Contents file generation, no new packages found",
+						slog.String("dir", archDir),
+					)
+
+					continue
+				}
+
+				changed, err := writeContentsIndice(b.repoDir, componentDir, architecture,
+					packages, newPackages, removedPackages, b.reread)
+				if err != nil {
+					return fmt.Errorf("failed to write Contents file: %w", err)
+				}
+				modified = modified || changed
+			}
+		}
+
+		// Every component contributes its own architectures, so a release with
+		// more than one component names most of them repeatedly.
+		slices.SortFunc(architectures, func(a, b arch.Arch) int {
+			return strings.Compare(a.String(), b.String())
+		})
+		architectures = slices.Compact(architectures)
+
+		releaseDir := filepath.Join(b.repoDir, "dists", releaseConf.Name)
+
+		if err := os.MkdirAll(releaseDir, 0o755); err != nil {
+			return fmt.Errorf("failed to create release directory: %w", err)
+		}
+
+		if err := writeReleaseFile(releaseDir, modified, b.conf, releaseConf, architectures, b.privateKey); err != nil {
+			return fmt.Errorf("failed to write release: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// filterForArch narrows a package list to what an architecture's indices
+// publish: its own packages, plus the architecture `all` ones folded into every
+// architecture.
+func filterForArch(pkgs []types.Package, architecture string) []types.Package {
+	filtered := make([]types.Package, 0, len(pkgs))
+	for _, pkg := range pkgs {
+		if pkg.Architecture.Is(archAll) || pkg.Architecture.String() == architecture {
+			filtered = append(filtered, pkg)
+		}
+	}
+
+	return filtered
+}
 
 // writePackagesIndice writes every published variant of the Packages indice,
 // reporting whether any of them changed.

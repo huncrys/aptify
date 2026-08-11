@@ -35,6 +35,60 @@ import (
 	"oaklab.hu/debian/deb822/types/version"
 )
 
+// changelogs publishes the changelogs the Release file advertises, and prunes
+// the ones nothing published references any more. It only runs for a
+// configuration that asks for changelogs and gives a URL to serve them from.
+func (b *build) changelogs() error {
+	if !b.conf.HasChangelogs() {
+		return nil
+	}
+
+	changelogReferences, err := writeChangelogs(b.repoDir, b.packages)
+	if err != nil {
+		return fmt.Errorf("failed to write changelogs: %w", err)
+	}
+
+	if err := pruneChangelogs(b.repoDir, changelogReferences); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// pruneChangelogs deletes every published changelog file the build did not
+// reference.
+func pruneChangelogs(repoDir string, referenced []string) error {
+	changelogDir := filepath.Join(repoDir, "changelogs")
+	if err := filepath.WalkDir(changelogDir, func(changelogFile string, d os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("failed to find changelog files: %w", err)
+		}
+
+		if d.IsDir() || !strings.HasSuffix(changelogFile, ".changelog") {
+			return nil
+		}
+
+		if slices.Contains(referenced, changelogFile) {
+			slog.Debug("Changelog file is referenced, skipping removal",
+				slog.String("file", changelogFile))
+
+			return nil
+		}
+
+		slog.Info("Removing unused changelog file",
+			slog.String("file", changelogFile))
+		if err := os.Remove(changelogFile); err != nil {
+			return fmt.Errorf("failed to remove unused changelog file: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to prune changelog files: %w", err)
+	}
+
+	return nil
+}
+
 func writeChangelogs(repoDir string, packagesForReleaseComponent map[string][]types.Package) ([]string, error) {
 	packages := make(map[string]types.Package)
 	for releaseComponent, releasePkgs := range packagesForReleaseComponent {

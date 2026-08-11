@@ -19,11 +19,18 @@
 package repo
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +44,7 @@ import (
 	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/keys"
 	"oaklab.hu/debian/deb822"
+	"oaklab.hu/debian/deb822/contents"
 	"oaklab.hu/debian/deb822/types"
 )
 
@@ -295,6 +303,208 @@ func verifyDetachedSignature(t *testing.T, releaseDir string) {
 		openpgp.EntityList{testEntity(t)}, body, signature, nil)
 	require.NoError(t, err)
 	require.NotNil(t, signer)
+}
+
+// The release and component most of the end to end tests publish into.
+const (
+	testReleaseName   = "bookworm"
+	testComponentName = "stable"
+)
+
+// componentConfig is one component of the release testConfig builds.
+func componentConfig(name string, maxVersions uint, packages ...string) v1alpha1.ComponentConfig {
+	return v1alpha1.ComponentConfig{Name: name, Packages: packages, MaxVersions: maxVersions}
+}
+
+// releaseConfig is one release of the configuration testConfig builds.
+func releaseConfig(name string, components ...v1alpha1.ComponentConfig) v1alpha1.ReleaseConfig {
+	return v1alpha1.ReleaseConfig{
+		Name:        name,
+		Version:     "12",
+		Origin:      "Demo Organization",
+		Label:       "Demo",
+		Suite:       name,
+		Description: "Demo repository",
+		Components:  components,
+	}
+}
+
+// testConfig is a configuration over the given releases.
+func testConfig(releases ...v1alpha1.ReleaseConfig) *v1alpha1.Repository {
+	return &v1alpha1.Repository{Releases: releases}
+}
+
+// singleComponentConfig is the shape most of these tests want: one release,
+// one component, over the named .deb files.
+func singleComponentConfig(maxVersions uint, packages ...string) *v1alpha1.Repository {
+	return testConfig(releaseConfig(testReleaseName,
+		componentConfig(testComponentName, maxVersions, packages...)))
+}
+
+// distPath addresses a file below a release's component directory.
+func distPath(repoDir, release, component string, elem ...string) string {
+	return filepath.Join(append([]string{repoDir, "dists", release, component}, elem...)...)
+}
+
+// packagesIn decodes the Packages indice of one architecture of the test
+// release and component.
+func packagesIn(t *testing.T, repoDir, architecture string) []types.Package {
+	t.Helper()
+
+	return decodePackages(t, distPath(repoDir, testReleaseName, testComponentName,
+		"binary-"+architecture, "Packages"))
+}
+
+// packageVersions lists the "<name> <version> <architecture>" of every stanza,
+// which is what a Packages indice is compared by.
+func packageVersions(packages []types.Package) []string {
+	keys := make([]string, 0, len(packages))
+	for _, pkg := range packages {
+		keys = append(keys, fmt.Sprintf("%s %s %s", pkg.Name, pkg.Version, pkg.Architecture))
+	}
+	slices.Sort(keys)
+
+	return keys
+}
+
+// readContents reads a published Contents indice into the packages each path
+// is attributed to.
+func readContents(t *testing.T, filePath string) map[string][]string {
+	t.Helper()
+
+	f, err := os.Open(filePath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	r, err := uncompr.NewReader(f)
+	require.NoError(t, err)
+	defer r.Close()
+
+	entries := make(map[string][]string)
+
+	cr := contents.NewReader(r)
+	for {
+		entry, err := cr.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+
+		entries[entry.Path] = entry.Packages
+	}
+
+	return entries
+}
+
+// fileMTime is the modification time a mirror would see.
+func fileMTime(t *testing.T, filePath string) stdtime.Time {
+	t.Helper()
+
+	fi, err := os.Stat(filePath)
+	require.NoError(t, err)
+
+	return fi.ModTime()
+}
+
+// debFixture describes a .deb to synthesise. The checked in packages ship the
+// same paths whatever their version, so a test that has to tell one version's
+// published contents from another builds its own.
+type debFixture struct {
+	name         string
+	version      string
+	architecture string
+	// description is the control field, which is what a reread of the pool has
+	// to pick up.
+	description string
+	// files is the data archive, keyed by the path inside the package.
+	files map[string]string
+}
+
+// buildTestDeb writes the package the fixture describes into dir and returns
+// its path.
+func buildTestDeb(t *testing.T, dir string, fixture debFixture) string {
+	t.Helper()
+
+	description := fixture.description
+	if description == "" {
+		description = "a synthetic test package"
+	}
+
+	control := fmt.Sprintf("Package: %s\nVersion: %s\nArchitecture: %s\n"+
+		"Maintainer: Test User <test@example.com>\nSection: misc\nPriority: optional\n"+
+		"Description: %s\n",
+		fixture.name, fixture.version, fixture.architecture, description)
+
+	var archive bytes.Buffer
+	archive.WriteString("!<arch>\n")
+
+	for _, member := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "debian-binary", body: []byte("2.0\n")},
+		{name: "control.tar.gz", body: tarGzip(t, map[string]string{"control": control})},
+		{name: "data.tar.gz", body: tarGzip(t, fixture.files)},
+	} {
+		// name, mtime, uid, gid, mode, size, then the ar magic; a member of odd
+		// length is padded to the next even offset.
+		fmt.Fprintf(&archive, "%-16s%-12d%-6d%-6d%-8o%-10d`\n",
+			member.name, 0, 0, 0, 0o100644, len(member.body))
+
+		archive.Write(member.body)
+		if len(member.body)%2 != 0 {
+			archive.WriteByte('\n')
+		}
+	}
+
+	debFilePath := filepath.Join(dir,
+		fmt.Sprintf("%s_%s_%s.deb", fixture.name, fixture.version, fixture.architecture))
+	require.NoError(t, os.WriteFile(debFilePath, archive.Bytes(), 0o644))
+
+	return debFilePath
+}
+
+// tarGzip renders the files, and the directories leading to them, as a gzipped
+// tar archive.
+func tarGzip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+
+	directories := make(map[string]bool)
+	for name := range files {
+		for dir := path.Dir(name); dir != "." && dir != "/"; dir = path.Dir(dir) {
+			directories[dir] = true
+		}
+	}
+
+	var buf bytes.Buffer
+
+	gzipWriter := gzip.NewWriter(&buf)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	for _, dir := range slices.Sorted(maps.Keys(directories)) {
+		require.NoError(t, tarWriter.WriteHeader(&tar.Header{
+			Typeflag: tar.TypeDir,
+			Name:     dir + "/",
+			Mode:     0o755,
+		}))
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		require.NoError(t, tarWriter.WriteHeader(&tar.Header{
+			Typeflag: tar.TypeReg,
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(files[name])),
+		}))
+
+		_, err := tarWriter.Write([]byte(files[name]))
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, tarWriter.Close())
+	require.NoError(t, gzipWriter.Close())
+
+	return buf.Bytes()
 }
 
 // decompress returns the content of a compressed index.

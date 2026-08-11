@@ -47,7 +47,13 @@ type countingFS struct {
 }
 
 func newCountingFS(root string) *countingFS {
-	return &countingFS{FS: repofs.NewOS(root)}
+	return counting(repofs.NewOS(root))
+}
+
+// counting wraps any repository, so the same assertions can be made about a
+// bucket as about a directory.
+func counting(fsys repofs.FS) *countingFS {
+	return &countingFS{FS: fsys}
 }
 
 func (c *countingFS) Open(name string) (fs.File, error) {

@@ -19,6 +19,7 @@
 package repo
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,7 +232,16 @@ func decodeComponentRelease(t *testing.T, filePath string) types.ComponentReleas
 func decodePackages(t *testing.T, filePath string) []types.Package {
 	t.Helper()
 
-	f, err := os.Open(filePath)
+	dir, name := filepath.Split(filePath)
+
+	return decodePackagesFS(t, os.DirFS(dir), name)
+}
+
+// decodePackagesFS is the same read of an indice published anywhere.
+func decodePackagesFS(t *testing.T, fsys fs.FS, name string) []types.Package {
+	t.Helper()
+
+	f, err := fsys.Open(name)
 	require.NoError(t, err)
 	defer f.Close()
 

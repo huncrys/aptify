@@ -141,8 +141,16 @@ type treeEntry struct {
 func snapshotTree(t *testing.T, dir string) map[string]treeEntry {
 	t.Helper()
 
+	return snapshotTreeFS(t, os.DirFS(dir))
+}
+
+// snapshotTreeFS is the same snapshot of a repository wherever it is
+// published, which is what lets one invariant be checked against a directory
+// and against a bucket.
+func snapshotTreeFS(t *testing.T, fsys fs.FS) map[string]treeEntry {
+	t.Helper()
+
 	tree := make(map[string]treeEntry)
-	fsys := os.DirFS(dir)
 
 	require.NoError(t, fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -152,7 +160,9 @@ func snapshotTree(t *testing.T, dir string) map[string]treeEntry {
 			return nil
 		}
 
-		fi, err := d.Info()
+		// Statted rather than taken from the walk: a listing carries the time
+		// of the upload, and what a mirror sees is the recorded one.
+		fi, err := fs.Stat(fsys, name)
 		if err != nil {
 			return err
 		}
@@ -178,19 +188,28 @@ func snapshotTree(t *testing.T, dir string) map[string]treeEntry {
 func verifyRepo(t *testing.T, repoDir string, releases ...string) {
 	t.Helper()
 
+	verifyRepoFS(t, os.DirFS(repoDir), releases...)
+}
+
+// verifyRepoFS is the same verification against a repository wherever it is
+// published: everything it reads goes through the filesystem it was built on.
+func verifyRepoFS(t *testing.T, repoFS fs.FS, releases ...string) {
+	t.Helper()
+
 	for _, release := range releases {
-		releaseDir := filepath.Join(repoDir, "dists", release)
+		releaseFS, err := fs.Sub(repoFS, path.Join("dists", release))
+		require.NoError(t, err)
 
 		// The keyring is what makes this a verification rather than a read: a
 		// release signed by anything else fails to decode.
-		signed := decodeRelease(t, filepath.Join(releaseDir, "InRelease"), openpgp.EntityList{testEntity(t)})
+		signed := decodeReleaseFS(t, releaseFS, "InRelease", openpgp.EntityList{testEntity(t)})
 
 		// Release carries the same stanza without the clearsigning, and
 		// Release.gpg signs exactly those bytes.
-		plain := decodeRelease(t, filepath.Join(releaseDir, "Release"), nil)
+		plain := decodeReleaseFS(t, releaseFS, "Release", nil)
 		require.Equal(t, plain, signed, "Release and InRelease disagree in %s", release)
 
-		verifyDetachedSignature(t, releaseDir)
+		verifyDetachedSignature(t, releaseFS)
 
 		require.NotEmpty(t, signed.SHA256, "%s publishes no checksums", release)
 		require.NotEmpty(t, signed.Components)
@@ -198,15 +217,10 @@ func verifyRepo(t *testing.T, repoDir string, releases ...string) {
 
 		// Every file the release names, hashed once and checked against all
 		// three lists.
-		releaseFS := os.DirFS(releaseDir)
-
 		sumsByName := make(map[string]hashsum.Sums, len(signed.SHA256))
 		for _, entry := range signed.SHA256 {
-			require.FileExists(t, filepath.Join(releaseDir, filepath.FromSlash(entry.Filename)),
-				"%s names a file that is not published", release)
-
 			sums, err := hashsum.File(releaseFS, entry.Filename)
-			require.NoError(t, err)
+			require.NoError(t, err, "%s names a file that is not published: %s", release, entry.Filename)
 
 			require.Equal(t, entry.Size, sums.Size, "%s: size of %s", release, entry.Filename)
 			require.Equal(t, entry.Hash, sums.SHA256, "%s: SHA256 of %s", release, entry.Filename)
@@ -230,7 +244,7 @@ func verifyRepo(t *testing.T, repoDir string, releases ...string) {
 			require.Equal(t, entry.Size, sums.Size)
 		}
 
-		verifyIndiceVariants(t, releaseDir, release, sumsByName)
+		verifyIndiceVariants(t, releaseFS, release, sumsByName)
 	}
 }
 
@@ -238,7 +252,7 @@ func verifyRepo(t *testing.T, repoDir string, releases ...string) {
 // uncompressed name as well as its compressed ones - apt resolves a target by
 // the uncompressed key and only then picks a variant to fetch - and that all of
 // them decompress to the same bytes.
-func verifyIndiceVariants(t *testing.T, releaseDir, release string, listed map[string]hashsum.Sums) {
+func verifyIndiceVariants(t *testing.T, releaseFS fs.FS, release string, listed map[string]hashsum.Sums) {
 	t.Helper()
 
 	for name := range listed {
@@ -250,10 +264,10 @@ func verifyIndiceVariants(t *testing.T, releaseDir, release string, listed map[s
 			require.Contains(t, listed, uncompressed,
 				"%s: %s is published without its uncompressed variant", release, name)
 
-			want, err := os.ReadFile(filepath.Join(releaseDir, filepath.FromSlash(uncompressed)))
+			want, err := fs.ReadFile(releaseFS, uncompressed)
 			require.NoError(t, err)
 
-			require.Equal(t, want, decompress(t, filepath.Join(releaseDir, filepath.FromSlash(name))),
+			require.Equal(t, want, decompressFS(t, releaseFS, name),
 				"%s: %s does not hold the same content as %s", release, name, uncompressed)
 		case base == "Packages":
 			require.Contains(t, listed, name+".gz", "%s: %s has no gzip variant", release, name)
@@ -269,7 +283,16 @@ func verifyIndiceVariants(t *testing.T, releaseDir, release string, listed map[s
 func decodeRelease(t *testing.T, releasePath string, keyring openpgp.EntityList) types.Release {
 	t.Helper()
 
-	releaseFile, err := os.Open(releasePath)
+	dir, name := filepath.Split(releasePath)
+
+	return decodeReleaseFS(t, os.DirFS(dir), name, keyring)
+}
+
+// decodeReleaseFS is the same read of a release published anywhere.
+func decodeReleaseFS(t *testing.T, releaseFS fs.FS, name string, keyring openpgp.EntityList) types.Release {
+	t.Helper()
+
+	releaseFile, err := releaseFS.Open(name)
 	require.NoError(t, err)
 	defer releaseFile.Close()
 
@@ -277,7 +300,7 @@ func decodeRelease(t *testing.T, releasePath string, keyring openpgp.EntityList)
 	require.NoError(t, err)
 
 	if keyring != nil {
-		require.NotNil(t, decoder.Signer(), "%s is not signed by the repository key", releasePath)
+		require.NotNil(t, decoder.Signer(), "%s is not signed by the repository key", name)
 	}
 
 	var release types.Release
@@ -287,14 +310,14 @@ func decodeRelease(t *testing.T, releasePath string, keyring openpgp.EntityList)
 }
 
 // verifyDetachedSignature checks Release.gpg against Release.
-func verifyDetachedSignature(t *testing.T, releaseDir string) {
+func verifyDetachedSignature(t *testing.T, releaseFS fs.FS) {
 	t.Helper()
 
-	body, err := os.Open(filepath.Join(releaseDir, "Release"))
+	body, err := releaseFS.Open("Release")
 	require.NoError(t, err)
 	defer body.Close()
 
-	signature, err := os.Open(filepath.Join(releaseDir, "Release.gpg"))
+	signature, err := releaseFS.Open("Release.gpg")
 	require.NoError(t, err)
 	defer signature.Close()
 
@@ -349,6 +372,34 @@ func distPath(repoDir, release, component string, elem ...string) string {
 // it: relative to the repository root and slash separated.
 func distName(release, component string, elem ...string) string {
 	return path.Join(append([]string{"dists", release, component}, elem...)...)
+}
+
+// mustSub is the subtree of a repository below a name.
+func mustSub(t *testing.T, fsys fs.FS, name string) fs.FS {
+	t.Helper()
+
+	sub, err := fs.Sub(fsys, name)
+	require.NoError(t, err)
+
+	return sub
+}
+
+// onlyAddedUnder is the one name below prefix that the second snapshot has and
+// the first does not, failing when there is more or less than one.
+func onlyAddedUnder(t *testing.T, prefix string, before, after map[string]treeEntry) string {
+	t.Helper()
+
+	var added []string
+	for name := range after {
+		if _, ok := before[name]; !ok && strings.HasPrefix(name, prefix) {
+			added = append(added, name)
+		}
+	}
+	slices.Sort(added)
+
+	require.Len(t, added, 1, "files added under %s", prefix)
+
+	return added[0]
 }
 
 // packagesIn decodes the Packages indice of one architecture of the test
@@ -512,11 +563,11 @@ func tarGzip(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-// decompress returns the content of a compressed index.
-func decompress(t *testing.T, filePath string) []byte {
+// decompressFS returns the content of a compressed index.
+func decompressFS(t *testing.T, fsys fs.FS, name string) []byte {
 	t.Helper()
 
-	f, err := os.Open(filePath)
+	f, err := fsys.Open(name)
 	require.NoError(t, err)
 	defer f.Close()
 

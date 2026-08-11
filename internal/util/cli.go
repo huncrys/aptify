@@ -24,11 +24,14 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// BeforeAll runs multiple BeforeFuncs in order
+// BeforeAll runs multiple BeforeFuncs in order, threading the context each one
+// returns into the next and, finally, back to the caller.
 func BeforeAll(fns ...cli.BeforeFunc) cli.BeforeFunc {
 	return func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		for _, fn := range fns {
-			if ctx, err := fn(ctx, cmd); err != nil {
+			var err error
+			ctx, err = fn(ctx, cmd)
+			if err != nil {
 				return ctx, err
 			}
 		}

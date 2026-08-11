@@ -94,38 +94,43 @@ func TestBeforeAllEmpty(t *testing.T) {
 	assert.Equal(t, ctx, got)
 }
 
-// TestBeforeAllDiscardsContext pins current behaviour rather than an intended
-// design: BeforeAll shadows ctx inside the loop, so a context a hook derives is
-// visible to neither the hooks after it nor the caller. Only the failure path
-// returns a hook's context. Nothing in aptify derives a context in a Before
-// hook today; if one starts to, this test is the thing that has to change with
-// the fix.
-func TestBeforeAllDiscardsContext(t *testing.T) {
-	type ctxKey struct{}
+// TestBeforeAllPropagatesContext pins the contract a Before hook relies on to
+// set anything up for the rest of the run: the context one hook derives is what
+// the hooks after it are given, and what the caller gets back. Each hook builds
+// on the previous one's, so several of them compose.
+func TestBeforeAllPropagatesContext(t *testing.T) {
+	type firstKey struct{}
+	type secondKey struct{}
 
-	derive := func(ctx context.Context, _ *cli.Command) (context.Context, error) {
-		return context.WithValue(ctx, ctxKey{}, "value"), nil
+	derive := func(key, value any) cli.BeforeFunc {
+		return func(ctx context.Context, _ *cli.Command) (context.Context, error) {
+			return context.WithValue(ctx, key, value), nil
+		}
 	}
 
 	var innerSaw any
 	observe := func(ctx context.Context, _ *cli.Command) (context.Context, error) {
-		innerSaw = ctx.Value(ctxKey{})
+		innerSaw = ctx.Value(firstKey{})
 		return ctx, nil
 	}
 
-	got, err := BeforeAll(derive, observe)(context.Background(), &cli.Command{})
+	got, err := BeforeAll(
+		derive(firstKey{}, "first"),
+		observe,
+		derive(secondKey{}, "second"),
+	)(context.Background(), &cli.Command{})
 	require.NoError(t, err)
-	assert.Nil(t, innerSaw, "a later hook does not see the derived context")
-	assert.Nil(t, got.Value(ctxKey{}), "nor does the caller")
+	assert.Equal(t, "first", innerSaw, "a later hook sees the derived context")
+	assert.Equal(t, "first", got.Value(firstKey{}), "and so does the caller")
+	assert.Equal(t, "second", got.Value(secondKey{}), "every hook's context is kept")
 
-	// The failure path is the one exception: it returns the failing hook's own
-	// context.
+	// The failure path returns the failing hook's own context too.
 	wantErr := errors.New("boom")
 	failWithContext := func(ctx context.Context, _ *cli.Command) (context.Context, error) {
-		return context.WithValue(ctx, ctxKey{}, "value"), wantErr
+		return context.WithValue(ctx, firstKey{}, "value"), wantErr
 	}
 
 	got, err = BeforeAll(failWithContext)(context.Background(), &cli.Command{})
 	require.ErrorIs(t, err, wantErr)
-	assert.Equal(t, "value", got.Value(ctxKey{}))
+	assert.Equal(t, "value", got.Value(firstKey{}))
 }

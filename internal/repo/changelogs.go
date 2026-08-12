@@ -123,9 +123,7 @@ func (b *build) writeChangelogs() ([]string, error) {
 
 			pkgSource, pkgVer := changelogSource(&pkg)
 
-			pkgFS, pkgName := b.poolFile(pkg.Filename)
-
-			changelogData, changelogTime, err := deb.GetPackageChangelog(pkgFS, pkgName, pkgSource, pkg.Name)
+			changelogData, changelogTime, err := b.packageChangelog(pkg.Filename, pkgSource, pkg.Name)
 			if err != nil {
 				switch {
 				case errors.Is(err, deb.ErrPackageUnreadable):
@@ -199,6 +197,17 @@ func (b *build) writeChangelogs() ([]string, error) {
 
 	slices.Sort(referencedFiles)
 	return slices.Compact(referencedFiles), nil
+}
+
+// packageChangelog reports the changelog a published package ships, off the
+// walk of its payload the Contents stage has usually already paid for.
+func (b *build) packageChangelog(poolPath, source, name string) ([]byte, stdtime.Time, error) {
+	scan, err := b.scanPool(poolPath)
+	if err != nil {
+		return nil, stdtime.Time{}, err
+	}
+
+	return scan.Changelog(source, name)
 }
 
 // placeholderChangelog synthesises the single entry published for a package

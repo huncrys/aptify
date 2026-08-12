@@ -31,7 +31,6 @@ import (
 	"sort"
 
 	"github.com/dpeckett/uncompr"
-	"oaklab.hu/debian/aptify/internal/deb"
 	"oaklab.hu/debian/aptify/internal/hashsum"
 	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/contents"
@@ -131,7 +130,7 @@ func (b *build) writeContentsIndice(componentDir, arch string, packages, newPack
 			continue
 		}
 
-		pkgContents, err := deb.GetPackageContents(b.poolFile(pkg.Filename))
+		scan, err := b.scanPool(pkg.Filename)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to get package contents: %w %s", err, pkg.Filename)
 		}
@@ -147,7 +146,7 @@ func (b *build) writeContentsIndice(componentDir, arch string, packages, newPack
 			qualifiedPackageName = fmt.Sprintf("%s/%s", pkg.Section, pkg.Name)
 		}
 
-		packageFiles[qualifiedPackageName] = pkgContents
+		packageFiles[qualifiedPackageName] = scan.Contents
 	}
 
 	// Invert into the layout of the file itself: one line per path, naming

@@ -19,91 +19,23 @@
 package deb
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
-	"os"
-	"strings"
-
-	"github.com/dpeckett/archivefs/arfs"
-	"github.com/dpeckett/archivefs/tarfs"
-	"github.com/dpeckett/uncompr"
 )
 
 // GetPackageContents lists the files shipped by the package named by fsys and
 // name, which is what a Contents indice describes it by.
 func GetPackageContents(fsys fs.FS, name string) ([]string, error) {
-	f, err := openPackage(fsys, name)
+	scan, err := ScanPackage(fsys, name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open package file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
+		var unreadable *unreadableError
+		if errors.As(err, &unreadable) {
+			return nil, fmt.Errorf("failed to open package file: %w", unreadable.err)
+		}
 
-	debFS, err := arfs.Open(f)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open archive: %w", err)
-	}
-
-	if err := ensureIsDebianPackage(debFS); err != nil {
 		return nil, err
 	}
 
-	// Look for data archive in the debian package.
-	entries, err := debFS.ReadDir(".")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read debian package: %w", err)
-	}
-
-	var dataArchiveFilename string
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "data.tar") {
-			dataArchiveFilename = entry.Name()
-			break
-		}
-	}
-	if dataArchiveFilename == "" {
-		return nil, fmt.Errorf("failed to find data archive in debian package")
-	}
-
-	dataArchiveFile, err := debFS.Open(dataArchiveFilename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open data archive: %w", err)
-	}
-
-	dataArchiveReader, err := uncompr.NewReader(dataArchiveFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress data archive: %w", err)
-	}
-
-	// Write data archive to temporary file (as we need a seekable reader for the
-	// tarfs implementation).
-	tempFile, err := spill(dataArchiveReader)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = tempFile.Close()
-		_ = os.Remove(tempFile.Name())
-	}()
-
-	dataArchiveFS, err := tarfs.Open(tempFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open data archive: %w", err)
-	}
-
-	var contents []string
-	err = fs.WalkDir(dataArchiveFS, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("failed to walk data archive: %w", err)
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		contents = append(contents, path)
-
-		return nil
-	})
-
-	return contents, err
+	return scan.Contents, nil
 }

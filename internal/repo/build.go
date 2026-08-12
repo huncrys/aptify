@@ -30,6 +30,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"oaklab.hu/debian/aptify/internal/config"
 	"oaklab.hu/debian/aptify/internal/config/v1alpha1"
+	"oaklab.hu/debian/aptify/internal/deb"
 	"oaklab.hu/debian/aptify/internal/keys"
 	"oaklab.hu/debian/aptify/internal/repofs"
 	"oaklab.hu/debian/deb822/types"
@@ -76,6 +77,10 @@ type build struct {
 	candidates map[string]bool
 	// The release/components whose Packages indices the backfill made stale.
 	backfilled map[string]bool
+	// The walk of each package's payload, keyed by pool path, so the Contents
+	// stage and the changelogs share one pass over a .deb. Nothing rewrites a
+	// pool file between stages; invalidate this if that ever changes.
+	scans map[string]*deb.Scan
 }
 
 // Build publishes the repository the configuration describes.
@@ -115,6 +120,7 @@ func Build(opts Options) error {
 		poolPaths:   make(map[string]string),
 		sourcePaths: make(map[string]string),
 		candidates:  make(map[string]bool),
+		scans:       make(map[string]*deb.Scan),
 	}
 
 	// Load existing state.
@@ -213,4 +219,23 @@ func (b *build) poolFile(poolPath string) (fs.FS, string) {
 	}
 
 	return b.fsys, poolPath
+}
+
+// scanPool walks a published package's payload, once per build: the Contents
+// indice of every architecture and the changelogs all ask for the same .deb.
+// A failure is not remembered, so that a package that cannot be read is
+// reported as often as it is asked for.
+func (b *build) scanPool(poolPath string) (*deb.Scan, error) {
+	if scan, ok := b.scans[poolPath]; ok {
+		return scan, nil
+	}
+
+	scan, err := deb.ScanPackage(b.poolFile(poolPath))
+	if err != nil {
+		return nil, err
+	}
+
+	b.scans[poolPath] = scan
+
+	return scan, nil
 }

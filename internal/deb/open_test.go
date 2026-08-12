@@ -89,6 +89,30 @@ func TestReadersAcceptAStreamOnlyFilesystem(t *testing.T) {
 	assert.Equal(t, 3, stream.opened, "the package was opened once per read")
 }
 
+// TestScanReadsThePackageOnce pins what the single walk buys: the contents
+// listing and the changelog are both answered out of it, so a package on remote
+// storage is fetched once however many readers ask about it.
+func TestScanReadsThePackageOnce(t *testing.T) {
+	const name = "hello-world_1.0_amd64.deb"
+
+	stream := &streamFS{FS: os.DirFS(fixtureDir)}
+
+	scan, err := deb.ScanPackage(stream, name)
+	require.NoError(t, err)
+	require.Equal(t, 1, stream.opened)
+
+	wantContents, err := deb.GetPackageContents(fixture(name))
+	require.NoError(t, err)
+	assert.Equal(t, wantContents, scan.Contents)
+
+	changelog, modTime, err := scan.Changelog("hello-world", "hello-world")
+	require.NoError(t, err)
+	assert.NotEmpty(t, changelog)
+	assert.False(t, modTime.IsZero())
+
+	assert.Equal(t, 1, stream.opened, "the package was opened again to answer for it")
+}
+
 // TestStreamedPackageDatesItsPlaceholder covers the timestamp the caller
 // writes a synthetic changelog with: it comes from the package, which is
 // statted through the filesystem rather than off a local file.

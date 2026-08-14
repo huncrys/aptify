@@ -92,5 +92,5 @@ gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce h1:xcEWjVhvbDy+nHP67nPDDpbYrY
 gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce/go.mod h1:yeKp02qBN3iKW1OzL3MGk2IdtZzaj7SFntXj72NppTA=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
-oaklab.hu/debian/deb822 v0.11.0 h1:GGp/nGm692fBcml2ykIR5ww0YmAZ21bB3ci4LDl9oDc=
-oaklab.hu/debian/deb822 v0.11.0/go.mod h1:it78CCGHjjm8ak+lS3F78xi7lZnbPDYPnqPhEHSW12U=
+oaklab.hu/debian/deb822 v0.11.1 h1:b2gMS9B6aQHtDGFRjcO6z06oAHLC5FEy+2qPrwj+jrI=
+oaklab.hu/debian/deb822 v0.11.1/go.mod h1:ryNJulesdE12H3u+Rg6oe+PrMHw/qfVg8WbBKA74ihc=

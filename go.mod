@@ -12,7 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.1
-	github.com/aws/smithy-go v1.27.7
+	github.com/aws/smithy-go v1.27.8
 	github.com/dpeckett/archivefs v0.11.1
 	github.com/dpeckett/uncompr v0.5.0
 	github.com/johannesboyne/gofakes3 v1.2.0

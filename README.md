@@ -44,6 +44,49 @@ aptify build -c examples/demo.yaml -d ./demo-repo
 
 This will create a directory called `demo-repo` containing the repository.
 
+### One-off Changes
+
+A build is declarative: the globs in the configuration decide what a component
+publishes. `add` and `remove` are the imperative way in, for pushing a single
+package into a published repository or pulling a bad upload back out without
+editing the configuration first. Both take the same configuration file a build
+does - the release metadata, `by_hash`, `changelogs` and `max_versions` all keep
+coming from it - and both run the whole downstream pipeline afterwards, so the
+indices, `Contents`, the pool collection, the changelogs and the signature end
+up exactly where a build would have left them.
+
+```shell
+aptify add -c examples/demo.yaml -d ./demo-repo ./hello-world_1.0_amd64.deb
+aptify remove -c examples/demo.yaml -d ./demo-repo hello-world=1.0
+```
+
+`--release`/`-r` and `--component`/`-C` name the target. Either may be left out
+when the configuration has only one thing it could mean; both have to be named
+by the configuration, since a component it does not carry would never have its
+indices written.
+
+`add` takes paths to local `.deb` files. Expanding a glob is the shell's job, so
+every path has to exist, and a package that is already published with the same
+checksum is left alone.
+
+`remove` takes selectors, and a run that would drop nothing at all is an error
+rather than a quiet success:
+
+- `hello-world` withdraws every published version.
+- `hello-world=1:2.0-1` withdraws one version. It is compared as a Debian
+  version, so the epoch is part of it.
+- `./hello-world_2.0_amd64.deb` withdraws exactly the package that file holds,
+  matched on name, version and architecture.
+- `--arch amd64` narrows any of the above to one architecture's indices. An
+  architecture `all` package is published inside every architecture's indices as
+  a single entry, so there is no removing it from one of them alone; asking for
+  that is an error rather than a partial removal.
+
+Removal withdraws a publication, it does not edit the configuration. A `.deb`
+that still matches one of the component's globs is therefore published again by
+the next `build` - to retire a package for good, take it out of the
+configuration (or out of the directory the glob matches) as well.
+
 ### Publish to S3
 
 `-d` also takes an `s3://bucket/prefix` URL, and the repository is then built

@@ -151,6 +151,117 @@ func main() {
 				},
 			},
 			{
+				Name:      "add",
+				Usage:     "Add package files to an already built repository",
+				ArgsUsage: "<package.deb>...",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "config",
+						Aliases:  []string{"c"},
+						Usage:    "Configuration file",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:    "repository-dir",
+						Aliases: []string{"d"},
+						Usage:   "Directory to store the repository, or an s3://bucket/prefix URL",
+						Value:   "repository",
+					},
+					&cli.StringFlag{
+						Name:    "release",
+						Aliases: []string{"r"},
+						Usage:   "Release to add the packages to, if the configuration has more than one",
+					},
+					&cli.StringFlag{
+						Name:    "component",
+						Aliases: []string{"C"},
+						Usage:   "Component to add the packages to, if the release has more than one",
+					},
+				},
+				Before: util.BeforeAll(initLogger, initConfDir),
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					repoDir := cmd.String("repository-dir")
+
+					slog.Info("Adding packages to repository", slog.String("dir", repoDir))
+
+					fsys, err := repofs.New(ctx, repoDir)
+					if err != nil {
+						return err
+					}
+
+					privateKeyPath := filepath.Join(cmd.String("config-dir"), "aptify_private.asc")
+
+					return repo.Add(repo.AddOptions{
+						Options: repo.Options{
+							FS:             fsys,
+							ConfigPath:     cmd.String("config"),
+							PrivateKeyPath: privateKeyPath,
+						},
+						Release:   cmd.String("release"),
+						Component: cmd.String("component"),
+						Packages:  cmd.Args().Slice(),
+					})
+				},
+			},
+			{
+				Name:      "remove",
+				Usage:     "Remove packages from an already built repository",
+				ArgsUsage: "<name | name=version | package.deb>...",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "config",
+						Aliases:  []string{"c"},
+						Usage:    "Configuration file",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:    "repository-dir",
+						Aliases: []string{"d"},
+						Usage:   "Directory to store the repository, or an s3://bucket/prefix URL",
+						Value:   "repository",
+					},
+					&cli.StringFlag{
+						Name:    "release",
+						Aliases: []string{"r"},
+						Usage:   "Release to remove the packages from, if the configuration has more than one",
+					},
+					&cli.StringFlag{
+						Name:    "component",
+						Aliases: []string{"C"},
+						Usage:   "Component to remove the packages from, if the release has more than one",
+					},
+					&cli.StringFlag{
+						Name:  "arch",
+						Usage: "Only remove packages of this architecture",
+					},
+				},
+				Before: util.BeforeAll(initLogger, initConfDir),
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					repoDir := cmd.String("repository-dir")
+
+					slog.Info("Removing packages from repository", slog.String("dir", repoDir))
+
+					fsys, err := repofs.New(ctx, repoDir)
+					if err != nil {
+						return err
+					}
+
+					privateKeyPath := filepath.Join(cmd.String("config-dir"), "aptify_private.asc")
+
+					return repo.Remove(repo.RemoveOptions{
+						Options: repo.Options{
+							FS:             fsys,
+							ConfigPath:     cmd.String("config"),
+							PrivateKeyPath: privateKeyPath,
+						},
+						Release:   cmd.String("release"),
+						Component: cmd.String("component"),
+						Arch:      cmd.String("arch"),
+						Selectors: cmd.Args().Slice(),
+					})
+				},
+			},
+			{
 				Name:  "inspect",
 				Usage: "Dump all packages in the repository as JSON",
 				Flags: []cli.Flag{

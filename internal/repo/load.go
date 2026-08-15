@@ -75,6 +75,15 @@ func (b *build) loadExisting() error {
 			b.archs[releaseComponent] = make(map[string]bool)
 		}
 
+		// The directory names are what a component publishes; the stanzas alone
+		// are not, because architecture `all` packages are folded into every
+		// architecture's indice and carry no trace of which ones. A component
+		// left publishing nothing but `all` packages would otherwise read back
+		// as an `all` only component, and a run with no configured globs to
+		// re-derive them from - a one-off add or remove - would republish it in
+		// the binary-all layout and leave the real architectures behind, stale.
+		b.archs[releaseComponent][strings.TrimPrefix(parts[len(parts)-2], "binary-")] = true
+
 		packages, err := readPackagesFile(b.fsys, packagesFile)
 		if err != nil {
 			return err

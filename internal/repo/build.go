@@ -85,27 +85,40 @@ type build struct {
 
 // Build publishes the repository the configuration describes.
 func Build(opts Options) error {
+	b, err := newBuild(opts)
+	if err != nil {
+		return err
+	}
+
+	return b.run(b.ingest)
+}
+
+// newBuild reads everything a run needs before it touches the repository: the
+// signing key and the configuration. Nothing here is specific to what the run
+// will do to the package lists, which is why the one-off add and remove start
+// the same way.
+func newBuild(opts Options) (*build, error) {
 	if _, err := os.Stat(opts.PrivateKeyPath); os.IsNotExist(err) {
-		return fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
+		return nil, fmt.Errorf("private key not found; run 'aptify init-keys' to generate one")
 	}
 
 	privateKey, err := keys.Load(opts.PrivateKeyPath)
 	if err != nil {
-		return fmt.Errorf("failed to read private key: %w", err)
+		return nil, fmt.Errorf("failed to read private key: %w", err)
 	}
 
 	confFile, err := os.Open(opts.ConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to open config file: %w", err)
+		return nil, fmt.Errorf("failed to open config file: %w", err)
 	}
 	defer confFile.Close()
 
 	conf, err := config.FromYAML(confFile)
 	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
+		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
-	b := &build{
+	return &build{
 		fsys:           opts.FS,
 		privateKeyPath: opts.PrivateKeyPath,
 		conf:           conf,
@@ -121,15 +134,22 @@ func Build(opts Options) error {
 		sourcePaths: make(map[string]string),
 		candidates:  make(map[string]bool),
 		scans:       make(map[string]*deb.Scan),
-	}
+	}, nil
+}
 
+// run drives the stage sequence, with mutate standing in for whatever changes
+// the package lists: the configured glob ingest for a build, a one-off add or
+// remove otherwise. Everything downstream reads only b.packages, b.added and
+// b.removed, so every entry point gets the same pruning, backfill, indices,
+// pool collection, changelogs and signature.
+func (b *build) run(mutate func() error) error {
 	// Load existing state.
 	if err := b.loadExisting(); err != nil {
 		return err
 	}
 
-	// Ingest.
-	if err := b.ingest(); err != nil {
+	// Ingest, or whatever else this run publishes.
+	if err := mutate(); err != nil {
 		return err
 	}
 

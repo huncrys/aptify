@@ -193,6 +193,73 @@ func TestS3IncrementalBuild(t *testing.T) {
 		packageVersions(decodePackagesFS(t, fsys, packagesName)))
 }
 
+// TestS3OneOffAddAndRemove drives the imperative commands against a bucket:
+// they publish and withdraw a single package without a local copy of the
+// repository, and pay the same way an incremental build does - the added .deb
+// is uploaded rather than read back, the architecture that gained nothing keeps
+// its indices, and the removal leaves the amd64 indice byte for byte what it
+// was before the add.
+func TestS3OneOffAddAndRemove(t *testing.T) {
+	fsys := s3test.FS(t)
+	confPath := writeTestConfig(t, s3Config(t))
+
+	buildInto(t, fsys, confPath, false, false)
+
+	before := snapshotTreeFS(t, fsys)
+
+	added := debPath(t, "hello-world_2.0_amd64.deb")
+
+	counted := counting(fsys)
+	require.NoError(t, Add(AddOptions{
+		Options: Options{
+			FS:             counted,
+			ConfigPath:     confPath,
+			PrivateKeyPath: testKeyPath(t),
+		},
+		Packages: []string{added},
+	}))
+
+	assert.Zero(t, counted.poolReads, "a one-off add read a package back out of the bucket")
+
+	verifyRepoFS(t, fsys, testReleaseName)
+
+	packagesName := distName(testReleaseName, testComponentName, "binary-amd64", "Packages")
+	poolName := "pool/stable/h/hello-world/hello-world_2.0_amd64.deb"
+
+	after := snapshotTreeFS(t, fsys)
+	assert.Equal(t, poolName, onlyAddedUnder(t, "pool/", before, after))
+	assert.Equal(t, []string{"hello-world 1.0 amd64", "hello-world 2.0 amd64", "hello-world 3.0 all"},
+		packageVersions(decodePackagesFS(t, fsys, packagesName)))
+
+	for _, name := range []string{
+		distName(testReleaseName, testComponentName, "binary-arm64", "Packages"),
+		distName(testReleaseName, testComponentName, "Contents-arm64"),
+	} {
+		assert.Equal(t, before[name], after[name], "%s was republished", name)
+	}
+
+	counted = counting(fsys)
+	require.NoError(t, Remove(RemoveOptions{
+		Options: Options{
+			FS:             counted,
+			ConfigPath:     confPath,
+			PrivateKeyPath: testKeyPath(t),
+		},
+		Selectors: []string{"hello-world=2.0"},
+	}))
+
+	assert.Zero(t, counted.poolReads, "a one-off removal read the pool")
+
+	verifyRepoFS(t, fsys, testReleaseName)
+
+	_, err := fs.Stat(fsys, poolName)
+	assert.ErrorIs(t, err, fs.ErrNotExist, "the withdrawn package was left in the pool")
+
+	// The indice holds what it held before the package was ever added, and
+	// because those are the bytes already published it was not rewritten.
+	assert.Equal(t, before[packagesName], snapshotTreeFS(t, fsys)[packagesName])
+}
+
 // TestS3ByHashSurvivesAReplacedIndice pins what by-hash is for, on storage
 // where a copy is a copy rather than a link: a client holding the previous
 // release can still fetch the index it named after a later build replaced it.

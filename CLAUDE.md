@@ -128,6 +128,20 @@ build is a single pass over the config with these stages, in order:
 6. **Changelogs** (only when `changelogs: true` *and* `url` is set - `HasChangelogs()`),
    then `signing_key.asc`.
 
+`Build` is only one entry into that sequence. `newBuild` reads the key and the config,
+`(b *build) run(mutate)` runs load -> `mutate` -> everything above, and `Build` is
+`b.run(b.ingest)`. The imperative `aptify add` / `aptify remove` in `oneoff.go` supply a
+different `mutate` - `ingestPackage` for the named local `.deb`s, or moving loaded
+stanzas from `b.packages` into `b.removed` keeping their `Filename` - and get the rest
+for free, because every stage downstream reads only those maps. They still require the
+config: `writeIndices` iterates the configured releases, so `resolveTarget` insists the
+release/component be one the config names (defaulting when there is exactly one), and a
+removal only withdraws a publication - a `.deb` the globs still match returns on the next
+`build`. Removal selectors are a bare name, `name=version` (compared as a Debian version,
+epochs included), or a path to a `.deb` matched on name+version+arch; `--arch` narrows
+them the way an architecture's indices are read, so an architecture `all` package is a
+hard error rather than a per-arch removal it cannot express.
+
 ### Incrementality
 
 This is the subtlety most changes have to respect. Both indices are skipped when a

@@ -48,93 +48,103 @@ func (b *build) ingest() error {
 				}
 
 				for _, pkgPath := range matches {
-					pkg, err := deb.GetMetadata(repofs.LocalFile(pkgPath))
-					if err != nil {
-						return fmt.Errorf("failed to get package metadata: %w", err)
+					if err := b.ingestPackage(releaseComponent, componentConf.Name, pkgPath); err != nil {
+						return err
 					}
-
-					sums, err := hashsum.File(repofs.LocalFile(pkgPath))
-					if err != nil {
-						return fmt.Errorf("failed to hash package: %w", err)
-					}
-					pkg.MD5sum = sums.MD5
-					pkg.SHA1 = sums.SHA1
-					pkg.SHA256 = sums.SHA256
-
-					skip := false
-					if _, ok := b.packages[releaseComponent]; ok {
-						for _, existingPkg := range b.packages[releaseComponent] {
-							if pkg.Compare(existingPkg) != 0 {
-								continue
-							}
-							if existingPkg.SHA256 != pkg.SHA256 {
-								slog.Warn("Package SHA256 mismatch, overwriting",
-									slog.String("name", pkg.Name),
-									slog.String("version", pkg.Version.String()),
-									slog.String("architecture", pkg.Architecture.String()),
-									slog.String("existing_sha256", existingPkg.SHA256),
-									slog.String("new_sha256", pkg.SHA256))
-								continue
-							}
-							skip = true
-							break
-						}
-					}
-
-					if skip {
-						slog.Info("Skipping existing package",
-							slog.String("name", pkg.Name),
-							slog.String("version", pkg.Version.String()),
-							slog.String("architecture", pkg.Architecture.String()))
-
-						continue
-					}
-
-					// Remove duplicates
-					b.packages[releaseComponent] = slices.DeleteFunc(b.packages[releaseComponent], func(existingPkg types.Package) bool {
-						return pkg.Compare(existingPkg) == 0
-					})
-
-					if _, ok := b.archs[releaseComponent]; !ok {
-						b.archs[releaseComponent] = make(map[string]bool)
-					}
-					b.archs[releaseComponent][pkg.Architecture.String()] = true
-
-					// The pool copy is byte for byte the file that was just
-					// hashed, so its size is read here rather than by statting
-					// the copy back.
-					fi, err := os.Stat(pkgPath)
-					if err != nil {
-						return fmt.Errorf("failed to get package size: %w", err)
-					}
-					pkg.Size = int(fi.Size())
-
-					// Only copy each deb file once.
-					// Use the component name from the first release that includes the package.
-					if existingPoolPath, ok := b.poolPaths[pkgPath]; !ok {
-						pkg.Filename = poolPathForPackage(componentConf.Name, pkg)
-
-						if err := b.fsys.MkdirAll(path.Dir(pkg.Filename)); err != nil {
-							return fmt.Errorf("failed to create pool subdirectory: %w", err)
-						}
-
-						if err := b.copyToPool(pkgPath, pkg.Filename, fi); err != nil {
-							return err
-						}
-
-						b.poolPaths[pkgPath] = pkg.Filename
-					} else {
-						pkg.Filename = existingPoolPath
-					}
-					b.candidates[pkg.Filename] = true
-					b.sourcePaths[pkg.Filename] = pkgPath
-
-					b.packages[releaseComponent] = append(b.packages[releaseComponent], *pkg)
-					b.added[releaseComponent] = append(b.added[releaseComponent], *pkg)
 				}
 			}
 		}
 	}
+
+	return nil
+}
+
+// ingestPackage reads one local .deb, copies it into the pool of a component
+// and records it as published there. It is what the configured globs expand to,
+// and what a one-off add names directly.
+func (b *build) ingestPackage(releaseComponent, componentName, pkgPath string) error {
+	pkg, err := deb.GetMetadata(repofs.LocalFile(pkgPath))
+	if err != nil {
+		return fmt.Errorf("failed to get package metadata: %w", err)
+	}
+
+	sums, err := hashsum.File(repofs.LocalFile(pkgPath))
+	if err != nil {
+		return fmt.Errorf("failed to hash package: %w", err)
+	}
+	pkg.MD5sum = sums.MD5
+	pkg.SHA1 = sums.SHA1
+	pkg.SHA256 = sums.SHA256
+
+	skip := false
+	if _, ok := b.packages[releaseComponent]; ok {
+		for _, existingPkg := range b.packages[releaseComponent] {
+			if pkg.Compare(existingPkg) != 0 {
+				continue
+			}
+			if existingPkg.SHA256 != pkg.SHA256 {
+				slog.Warn("Package SHA256 mismatch, overwriting",
+					slog.String("name", pkg.Name),
+					slog.String("version", pkg.Version.String()),
+					slog.String("architecture", pkg.Architecture.String()),
+					slog.String("existing_sha256", existingPkg.SHA256),
+					slog.String("new_sha256", pkg.SHA256))
+				continue
+			}
+			skip = true
+			break
+		}
+	}
+
+	if skip {
+		slog.Info("Skipping existing package",
+			slog.String("name", pkg.Name),
+			slog.String("version", pkg.Version.String()),
+			slog.String("architecture", pkg.Architecture.String()))
+
+		return nil
+	}
+
+	// Remove duplicates
+	b.packages[releaseComponent] = slices.DeleteFunc(b.packages[releaseComponent], func(existingPkg types.Package) bool {
+		return pkg.Compare(existingPkg) == 0
+	})
+
+	if _, ok := b.archs[releaseComponent]; !ok {
+		b.archs[releaseComponent] = make(map[string]bool)
+	}
+	b.archs[releaseComponent][pkg.Architecture.String()] = true
+
+	// The pool copy is byte for byte the file that was just hashed, so its size
+	// is read here rather than by statting the copy back.
+	fi, err := os.Stat(pkgPath)
+	if err != nil {
+		return fmt.Errorf("failed to get package size: %w", err)
+	}
+	pkg.Size = int(fi.Size())
+
+	// Only copy each deb file once.
+	// Use the component name from the first release that includes the package.
+	if existingPoolPath, ok := b.poolPaths[pkgPath]; !ok {
+		pkg.Filename = poolPathForPackage(componentName, pkg)
+
+		if err := b.fsys.MkdirAll(path.Dir(pkg.Filename)); err != nil {
+			return fmt.Errorf("failed to create pool subdirectory: %w", err)
+		}
+
+		if err := b.copyToPool(pkgPath, pkg.Filename, fi); err != nil {
+			return err
+		}
+
+		b.poolPaths[pkgPath] = pkg.Filename
+	} else {
+		pkg.Filename = existingPoolPath
+	}
+	b.candidates[pkg.Filename] = true
+	b.sourcePaths[pkg.Filename] = pkgPath
+
+	b.packages[releaseComponent] = append(b.packages[releaseComponent], *pkg)
+	b.added[releaseComponent] = append(b.added[releaseComponent], *pkg)
 
 	return nil
 }

@@ -199,7 +199,7 @@ func stanzaFields(t *testing.T, filePath string) []string {
 	require.NoError(t, err)
 
 	var fields []string
-	for _, line := range strings.Split(string(body), "\n") {
+	for line := range strings.SplitSeq(string(body), "\n") {
 		if line == "" || strings.HasPrefix(line, " ") {
 			continue
 		}
@@ -218,7 +218,7 @@ func decodeComponentRelease(t *testing.T, filePath string) types.ComponentReleas
 
 	f, err := os.Open(filePath)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	decoder, err := deb822.NewDecoder(f, nil)
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func decodePackagesFS(t *testing.T, fsys fs.FS, name string) []types.Package {
 
 	f, err := fsys.Open(name)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	decoder, err := deb822.NewDecoder(f, nil)
 	require.NoError(t, err)

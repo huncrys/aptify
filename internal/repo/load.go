@@ -137,7 +137,7 @@ func readPackagesFile(fsys fs.FS, name string) ([]types.Package, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Packages file: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	decoder, err := deb822.NewDecoder(reader, nil)
 	if err != nil {

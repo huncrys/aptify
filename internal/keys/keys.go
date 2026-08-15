@@ -82,7 +82,7 @@ func Load(path string) (*openpgp.Entity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open private key: %w", err)
 	}
-	defer keyFile.Close()
+	defer func() { _ = keyFile.Close() }()
 
 	keyRing, err := openpgp.ReadArmoredKeyRing(keyFile)
 	if err != nil {

@@ -94,7 +94,7 @@ func File(fsys fs.FS, name string) (Sums, error) {
 	if err != nil {
 		return Sums{}, fmt.Errorf("failed to open file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	md5Hash := md5.New()
 	sha1Hash := sha1.New()

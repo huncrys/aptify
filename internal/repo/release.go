@@ -55,7 +55,7 @@ func readReleaseFile(fsys repofs.FS, releaseDir string, privateKey *openpgp.Enti
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Release file: %w", err)
 	}
-	defer releaseFile.Close()
+	defer func() { _ = releaseFile.Close() }()
 
 	decoder, err := deb822.NewDecoder(releaseFile, openpgp.EntityList{privateKey})
 	if err != nil {

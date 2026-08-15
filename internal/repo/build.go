@@ -111,7 +111,7 @@ func newBuild(opts Options) (*build, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open config file: %w", err)
 	}
-	defer confFile.Close()
+	defer func() { _ = confFile.Close() }()
 
 	conf, err := config.FromYAML(confFile)
 	if err != nil {
@@ -191,7 +191,7 @@ func (b *build) writeSigningKey() error {
 	if _, err := b.fsys.Stat(signingKeyName); err == nil {
 
 		if signingKeyFile, err := b.fsys.Open(signingKeyName); err == nil {
-			defer signingKeyFile.Close()
+			defer func() { _ = signingKeyFile.Close() }()
 
 			if keyRing, err := openpgp.ReadArmoredKeyRing(signingKeyFile); err == nil {
 				for _, publicKey := range keyRing {

@@ -294,7 +294,7 @@ func decodeReleaseFS(t *testing.T, releaseFS fs.FS, name string, keyring openpgp
 
 	releaseFile, err := releaseFS.Open(name)
 	require.NoError(t, err)
-	defer releaseFile.Close()
+	defer func() { _ = releaseFile.Close() }()
 
 	decoder, err := deb822.NewDecoder(releaseFile, keyring)
 	require.NoError(t, err)
@@ -315,11 +315,11 @@ func verifyDetachedSignature(t *testing.T, releaseFS fs.FS) {
 
 	body, err := releaseFS.Open("Release")
 	require.NoError(t, err)
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	signature, err := releaseFS.Open("Release.gpg")
 	require.NoError(t, err)
-	defer signature.Close()
+	defer func() { _ = signature.Close() }()
 
 	signer, err := openpgp.CheckArmoredDetachedSignature(
 		openpgp.EntityList{testEntity(t)}, body, signature, nil)
@@ -430,11 +430,11 @@ func readContents(t *testing.T, filePath string) map[string][]string {
 
 	f, err := os.Open(filePath)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	r, err := uncompr.NewReader(f)
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	entries := make(map[string][]string)
 
@@ -569,11 +569,11 @@ func decompressFS(t *testing.T, fsys fs.FS, name string) []byte {
 
 	f, err := fsys.Open(name)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	r, err := uncompr.NewReader(f)
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	body, err := io.ReadAll(r)
 	require.NoError(t, err)

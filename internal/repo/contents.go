@@ -206,7 +206,7 @@ func readContentsIndice(fsys fs.FS, contentsPath string) (map[string][]string, e
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to open Contents file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	r, err := uncompr.NewReader(f)
 	if err != nil {
@@ -217,7 +217,7 @@ func readContentsIndice(fsys fs.FS, contentsPath string) (map[string][]string, e
 
 		return nil, fmt.Errorf("failed to create decompression reader: %w", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	cr := contents.NewReader(r)
 	for {

@@ -16,7 +16,7 @@ require (
 	github.com/dpeckett/archivefs v0.11.1
 	github.com/dpeckett/uncompr v0.5.0
 	github.com/johannesboyne/gofakes3 v1.2.0
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.0
 	github.com/urfave/cli/v3 v3.11.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	oaklab.hu/debian/deb822 v0.11.1
@@ -37,10 +37,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.6 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.23 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/ryszard/goskiplist v0.0.0-20150312221310-2dfbae5fcf46 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	go.shabbyrobe.org/gocovmerge v0.0.0-20230507111327-fa4f82cfbf4d // indirect

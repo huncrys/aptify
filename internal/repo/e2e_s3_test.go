@@ -255,9 +255,10 @@ func TestS3OneOffAddAndRemove(t *testing.T) {
 	_, err := fs.Stat(fsys, poolName)
 	assert.ErrorIs(t, err, fs.ErrNotExist, "the withdrawn package was left in the pool")
 
-	// The indice holds what it held before the package was ever added, and
-	// because those are the bytes already published it was not rewritten.
-	assert.Equal(t, before[packagesName], snapshotTreeFS(t, fsys)[packagesName])
+	// The indice holds what it held before the package was ever added. Only its
+	// bytes are compared: the removal republishes them over the version the add
+	// wrote, so the mtime is the removal's, whatever second that lands in.
+	assert.Equal(t, before[packagesName].sha256, snapshotTreeFS(t, fsys)[packagesName].sha256)
 }
 
 // TestS3ByHashSurvivesAReplacedIndice pins what by-hash is for, on storage

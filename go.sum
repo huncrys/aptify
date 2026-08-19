@@ -86,5 +86,5 @@ golang.org/x/tools v0.8.0 h1:vSDcovVPld282ceKgDimkRSC8kpaH1dgyc9UMzlt84Y=
 golang.org/x/tools v0.8.0/go.mod h1:JxBZ99ISMI5ViVkT1tr6tdNmXeTrcpVSD3vZ1RsRdN4=
 gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce h1:xcEWjVhvbDy+nHP67nPDDpbYrY+ILlfndk4bRioVHaU=
 gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce/go.mod h1:yeKp02qBN3iKW1OzL3MGk2IdtZzaj7SFntXj72NppTA=
-oaklab.hu/debian/deb822 v0.11.1 h1:b2gMS9B6aQHtDGFRjcO6z06oAHLC5FEy+2qPrwj+jrI=
-oaklab.hu/debian/deb822 v0.11.1/go.mod h1:ryNJulesdE12H3u+Rg6oe+PrMHw/qfVg8WbBKA74ihc=
+oaklab.hu/debian/deb822 v0.11.2 h1:lMowQkF8naErHkPc3jWjLSgwNf1RDNXd0yyb2k+nIlM=
+oaklab.hu/debian/deb822 v0.11.2/go.mod h1:EJnQFevlTeNhYd6yAgWo2AzsO23wHd/RJhhdFGjVcnE=

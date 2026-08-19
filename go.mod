@@ -19,7 +19,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.11.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
-	oaklab.hu/debian/deb822 v0.11.2
+	oaklab.hu/debian/deb822 v0.11.3
 )
 
 require (

@@ -50,8 +50,8 @@ github.com/dpeckett/archivefs v0.11.1 h1:yEkigpGprxuVrPeaqeDlHq8rzUwoILRv1sM/0iI
 github.com/dpeckett/archivefs v0.11.1/go.mod h1:Jcv0qViFG7BHxAsXPzfIIoeJURxmhmxUcAlv1xRvxn0=
 github.com/dpeckett/uncompr v0.5.0 h1:nibMydzi7Pn0kbA1p38lI6H8cs4CGyn3LOFRXhPWKBU=
 github.com/dpeckett/uncompr v0.5.0/go.mod h1:Z5Kv7L7JDX8dyTWmd5tIG/TuBPkPgkD4dko7Ya2n3UI=
-github.com/johannesboyne/gofakes3 v1.2.0 h1:I9VEzPWvvAUAGzDlhYFoZjF0AXMlkcEyZlmBwiI6Oms=
-github.com/johannesboyne/gofakes3 v1.2.0/go.mod h1:UHhRZRod9rENGFrUWTYnQHZqlNgSmjOq8DaD/ATQYRM=
+github.com/johannesboyne/gofakes3 v1.3.0 h1:Y3X8GV72wvm44O6mawuyaixb/ABma2z12mEfcSVWXT4=
+github.com/johannesboyne/gofakes3 v1.3.0/go.mod h1:UHhRZRod9rENGFrUWTYnQHZqlNgSmjOq8DaD/ATQYRM=
 github.com/klauspost/compress v1.18.3 h1:9PJRvfbmTabkOX8moIpXPbMMbYN60bWImDDU7L+/6zw=
 github.com/klauspost/compress v1.18.3/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
 github.com/pierrec/lz4/v4 v4.1.23 h1:oJE7T90aYBGtFNrI8+KbETnPymobAhzRrR8Mu8n1yfU=
